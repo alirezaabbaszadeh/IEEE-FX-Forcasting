@@ -1,0 +1,74 @@
+{
+  "version": "v_08",
+  "file_path": "./csv/EURUSD_Candlestick_1_Hour_BID_01.01.2010-18.02.2025.csv",
+  "base_dir": "./IEEE_TNNLS_Runs_V8",
+  "data": {
+    "time_steps": 3,
+    "train_ratio": 0.96,
+    "val_ratio": 0.02,
+    "test_ratio": 0.02
+  },
+  "training": {
+    "epochs": 60,
+    "batch_size": 5000
+  },
+  "callbacks": {
+    "early_stopping_patience": 20,
+    "reduce_lr_patience": 1,
+    "reduce_lr_factor": 0.1,
+    "min_lr": 5e-7
+  },
+  "model": {
+    "block_configs": [
+      {"filters": 8, "kernel_size": 3, "pool_size": null}
+    ],
+    "num_heads_res_block": 3,
+    "key_dim_res_block": 4,
+    "lstm_units": 200,
+    "num_lstm_layers": 1,
+    "attention_after_lstm_heads": 6,
+    "attention_after_lstm_key_dim": 10,
+    "moe_num_experts": 12,
+    "moe_units": 64,
+    "dense_units_before_output": 256,
+    "leaky_relu_alpha_dense": 0.0,
+    "leaky_relu_alpha_res_block": 0.04,
+    "leaky_relu_alpha_res_block2": 0.03,
+    "dropout_rate": 0.0,
+    "l2_reg": 0.0,
+    "optimizer_lr": 0.01,
+    "optimizer_clipnorm": null,
+    "optimizer_clipvalue": null
+  },
+  "metadata": {
+    "legacy_version": "v_08",
+    "default_output_dir_name": "IEEE_TNNLS_Runs_V8"
+  },
+  "dependencies": {
+    "data_loader": "v_08.DataLoader.DataLoader",
+    "model_builder": "v_08.ModelBuilder.ModelBuilder",
+    "trainer": "v_08.Trainer.Trainer",
+    "evaluator": "v_08.Evaluator.Evaluator",
+    "history_manager": "v_08.HistoryManager.HistoryManager"
+  },
+  "runtime": {
+    "seed": 42,
+    "mixed_precision": {
+      "enabled": true,
+      "policy": "mixed_float16"
+    }
+  },
+  "cli": {
+    "flags": {
+      "data_file": {"path": "file_path", "type": "path"},
+      "output_dir": {"path": "base_dir", "type": "path"},
+      "time_steps": {"path": "data.time_steps", "type": "int"},
+      "epochs": {"path": "training.epochs", "type": "int"},
+      "batch_size": {"path": "training.batch_size", "type": "int"},
+      "optimizer_lr": {"path": "model.optimizer_lr", "type": "float"}
+    },
+    "toggles": {
+      "disable_mixed_precision": {"path": "runtime.mixed_precision.enabled", "value": false}
+    }
+  }
+}
