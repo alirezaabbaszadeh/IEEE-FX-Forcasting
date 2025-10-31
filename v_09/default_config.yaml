@@ -16,11 +16,15 @@
     "early_stopping_patience": 20,
     "reduce_lr_patience": 1,
     "reduce_lr_factor": 0.1,
-    "min_lr": 5e-7
+    "min_lr": 5e-07
   },
   "model": {
     "block_configs": [
-      {"filters": 8, "kernel_size": 3, "pool_size": null}
+      {
+        "filters": 8,
+        "kernel_size": 3,
+        "pool_size": null
+      }
     ],
     "leaky_relu_alpha_res_block_1": 0.04,
     "leaky_relu_alpha_res_block_2": 0.03,
@@ -44,11 +48,12 @@
     "default_output_dir_name": "IEEE_TNNLS_Runs_V9"
   },
   "dependencies": {
-    "data_loader": "v_09.DataLoader.DataLoader",
-    "model_builder": "v_09.ModelBuilder.ModelBuilder",
-    "trainer": "v_09.Trainer.Trainer",
-    "evaluator": "v_09.Evaluator.Evaluator",
-    "history_manager": "v_09.HistoryManager.HistoryManager"
+    "data_loader": "v_09.dependencies.create_data_loader",
+    "model_builder": "v_09.dependencies.create_model_builder",
+    "trainer": "v_09.dependencies.create_trainer",
+    "evaluator": "v_09.dependencies.create_evaluator",
+    "history_manager": "v_09.dependencies.create_history_manager",
+    "hooks": "v_09.dependencies.build_hooks"
   },
   "runtime": {
     "seed": 42,
@@ -59,15 +64,36 @@
   },
   "cli": {
     "flags": {
-      "data_file": {"path": "file_path", "type": "path"},
-      "output_dir": {"path": "base_dir", "type": "path"},
-      "time_steps": {"path": "data.time_steps", "type": "int"},
-      "epochs": {"path": "training.epochs", "type": "int"},
-      "batch_size": {"path": "training.batch_size", "type": "int"},
-      "optimizer_lr": {"path": "model.optimizer_lr", "type": "float"}
+      "data_file": {
+        "path": "file_path",
+        "type": "path"
+      },
+      "output_dir": {
+        "path": "base_dir",
+        "type": "path"
+      },
+      "time_steps": {
+        "path": "data.time_steps",
+        "type": "int"
+      },
+      "epochs": {
+        "path": "training.epochs",
+        "type": "int"
+      },
+      "batch_size": {
+        "path": "training.batch_size",
+        "type": "int"
+      },
+      "optimizer_lr": {
+        "path": "model.optimizer_lr",
+        "type": "float"
+      }
     },
     "toggles": {
-      "disable_mixed_precision": {"path": "runtime.mixed_precision.enabled", "value": false}
+      "disable_mixed_precision": {
+        "path": "runtime.mixed_precision.enabled",
+        "value": false
+      }
     }
   }
 }

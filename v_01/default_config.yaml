@@ -16,7 +16,7 @@
     "early_stopping_patience": 60,
     "reduce_lr_patience": 1,
     "reduce_lr_factor": 0.1,
-    "min_lr": 5e-7
+    "min_lr": 5e-07
   },
   "model": {
     "block_configs": [],
@@ -52,11 +52,12 @@
     "default_output_dir_name": "IEEE_TNNLS_Runs_V1_Standard"
   },
   "dependencies": {
-    "data_loader": "v_01.DataLoader.DataLoader",
-    "model_builder": "v_01.ModelBuilder.ModelBuilder",
-    "trainer": "v_01.Trainer.Trainer",
-    "evaluator": "v_01.Evaluator.Evaluator",
-    "history_manager": "v_01.HistoryManager.HistoryManager"
+    "data_loader": "v_01.dependencies.create_data_loader",
+    "model_builder": "v_01.dependencies.create_model_builder",
+    "trainer": "v_01.dependencies.create_trainer",
+    "evaluator": "v_01.dependencies.create_evaluator",
+    "history_manager": "v_01.dependencies.create_history_manager",
+    "hooks": "v_01.dependencies.build_hooks"
   },
   "runtime": {
     "seed": 42,
@@ -67,21 +68,60 @@
   },
   "cli": {
     "flags": {
-      "data_file": {"path": "file_path", "type": "path"},
-      "output_dir": {"path": "base_dir", "type": "path"},
-      "time_steps": {"path": "data.time_steps", "type": "int"},
-      "epochs": {"path": "training.epochs", "type": "int"},
-      "batch_size": {"path": "training.batch_size", "type": "int"},
-      "filters_conv1": {"path": "model.filters_conv1", "type": "int"},
-      "kernel_size_conv1": {"path": "model.kernel_size_conv1", "type": "int"},
-      "leaky_alpha_conv1": {"path": "model.leaky_relu_alpha_conv1", "type": "float"},
-      "lstm_units": {"path": "model.lstm_units", "type": "int"},
-      "recurrent_dropout_lstm": {"path": "model.recurrent_dropout_lstm", "type": "float"},
-      "optimizer_lr": {"path": "model.optimizer_lr", "type": "float"},
-      "l2_reg_output": {"path": "model.output_l2_reg", "type": "float"}
+      "data_file": {
+        "path": "file_path",
+        "type": "path"
+      },
+      "output_dir": {
+        "path": "base_dir",
+        "type": "path"
+      },
+      "time_steps": {
+        "path": "data.time_steps",
+        "type": "int"
+      },
+      "epochs": {
+        "path": "training.epochs",
+        "type": "int"
+      },
+      "batch_size": {
+        "path": "training.batch_size",
+        "type": "int"
+      },
+      "filters_conv1": {
+        "path": "model.filters_conv1",
+        "type": "int"
+      },
+      "kernel_size_conv1": {
+        "path": "model.kernel_size_conv1",
+        "type": "int"
+      },
+      "leaky_alpha_conv1": {
+        "path": "model.leaky_relu_alpha_conv1",
+        "type": "float"
+      },
+      "lstm_units": {
+        "path": "model.lstm_units",
+        "type": "int"
+      },
+      "recurrent_dropout_lstm": {
+        "path": "model.recurrent_dropout_lstm",
+        "type": "float"
+      },
+      "optimizer_lr": {
+        "path": "model.optimizer_lr",
+        "type": "float"
+      },
+      "l2_reg_output": {
+        "path": "model.output_l2_reg",
+        "type": "float"
+      }
     },
     "toggles": {
-      "enable_mixed_precision": {"path": "runtime.mixed_precision.enabled", "value": true}
+      "enable_mixed_precision": {
+        "path": "runtime.mixed_precision.enabled",
+        "value": true
+      }
     }
   }
 }
