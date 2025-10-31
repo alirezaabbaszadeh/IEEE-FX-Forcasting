@@ -11,7 +11,7 @@ import os
 import random
 import sys
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Mapping, MutableMapping, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Mapping, MutableMapping, Optional, Tuple
 
 import numpy as np
 import tensorflow as tf
@@ -195,6 +195,18 @@ def build_orchestrator(
     dependencies_payload: Mapping[str, Any],
     logger: logging.Logger,
 ) -> TimeSeriesOrchestrator:
+    def _normalise_factory(reference: Any) -> Callable[..., Any]:
+        if callable(reference):
+            return reference
+        return resolve_factory(reference)
+
+    payload = dict(dependencies_payload)
+    hooks_ref = payload.pop("hooks", None)
+    hooks = None
+    if hooks_ref is not None:
+        hooks_factory = _normalise_factory(hooks_ref)
+        hooks = hooks_factory()
+
     orchestrator_config = OrchestratorConfig(
         file_path=config_payload["file_path"],
         base_dir=config_payload.get("base_dir", "TimeSeries_Project_Runs/"),
@@ -206,14 +218,19 @@ def build_orchestrator(
     )
 
     dependencies = OrchestratorDependencies(
-        data_loader=resolve_factory(dependencies_payload["data_loader"]),
-        model_builder=resolve_factory(dependencies_payload["model_builder"]),
-        trainer=resolve_factory(dependencies_payload["trainer"]),
-        evaluator=resolve_factory(dependencies_payload["evaluator"]),
-        history_manager=resolve_factory(dependencies_payload["history_manager"]),
+        data_loader=_normalise_factory(payload["data_loader"]),
+        model_builder=_normalise_factory(payload["model_builder"]),
+        trainer=_normalise_factory(payload["trainer"]),
+        evaluator=_normalise_factory(payload["evaluator"]),
+        history_manager=_normalise_factory(payload["history_manager"]),
     )
 
-    return TimeSeriesOrchestrator(config=orchestrator_config, dependencies=dependencies, logger=logger)
+    return TimeSeriesOrchestrator(
+        config=orchestrator_config,
+        dependencies=dependencies,
+        hooks=hooks,
+        logger=logger,
+    )
 
 
 def main(argv: Optional[Iterable[str]] = None) -> int:
