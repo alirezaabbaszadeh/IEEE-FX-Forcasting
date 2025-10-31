@@ -1,0 +1,87 @@
+{
+  "version": "v_03",
+  "file_path": "./csv/EURUSD_Candlestick_1_Hour_BID_01.01.2010-18.02.2025.csv",
+  "base_dir": "./IEEE_TNNLS_Runs_V3_Standard_MP_NoDropout",
+  "data": {
+    "time_steps": 3,
+    "train_ratio": 0.96,
+    "val_ratio": 0.02,
+    "test_ratio": 0.02
+  },
+  "training": {
+    "epochs": 60,
+    "batch_size": 5000
+  },
+  "callbacks": {
+    "early_stopping_patience": 60,
+    "reduce_lr_patience": 1,
+    "reduce_lr_factor": 0.1,
+    "min_lr": 5e-7
+  },
+  "model": {
+    "block_configs": [
+      {"filters": 8, "kernel_size": 3, "pool_size": null}
+    ],
+    "num_heads_residual_block": 3,
+    "key_dim_residual_block": 4,
+    "leaky_relu_alpha_conv_1": 0.04,
+    "leaky_relu_alpha_conv_2": 0.03,
+    "leaky_relu_alpha_after_residual_add": 0.03,
+    "conv_l2_reg": 0.0,
+    "num_bilstm_layers": 1,
+    "lstm_units": 200,
+    "recurrent_dropout_lstm": 0.0,
+    "lstm_l2_reg": 0.0,
+    "use_batchnorm_after_lstm": false,
+    "use_batchnorm_after_final_attention": true,
+    "use_dropout_before_output": false,
+    "dropout_rate_before_output": 0.0,
+    "output_activation": "linear",
+    "output_l2_reg": 0.0,
+    "optimizer_lr": 0.01,
+    "optimizer_weight_decay": null,
+    "optimizer_clipnorm": null,
+    "optimizer_clipvalue": null
+  },
+  "metadata": {
+    "legacy_version": "v_03",
+    "default_output_dir_name": "IEEE_TNNLS_Runs_V3_Standard_MP_NoDropout"
+  },
+  "dependencies": {
+    "data_loader": "v_03.DataLoader.DataLoader",
+    "model_builder": "v_03.ModelBuilder.ModelBuilder",
+    "trainer": "v_03.Trainer.Trainer",
+    "evaluator": "v_03.Evaluator.Evaluator",
+    "history_manager": "v_03.HistoryManager.HistoryManager"
+  },
+  "runtime": {
+    "seed": 42,
+    "mixed_precision": {
+      "enabled": true,
+      "policy": "mixed_float16"
+    }
+  },
+  "cli": {
+    "flags": {
+      "data_file": {"path": "file_path", "type": "path"},
+      "output_dir": {"path": "base_dir", "type": "path"},
+      "time_steps": {"path": "data.time_steps", "type": "int"},
+      "epochs": {"path": "training.epochs", "type": "int"},
+      "batch_size": {"path": "training.batch_size", "type": "int"},
+      "num_heads_residual_block": {"path": "model.num_heads_residual_block", "type": "int"},
+      "key_dim_residual_block": {"path": "model.key_dim_residual_block", "type": "int"},
+      "leaky_alpha_conv1": {"path": "model.leaky_relu_alpha_conv_1", "type": "float"},
+      "leaky_alpha_conv2": {"path": "model.leaky_relu_alpha_conv_2", "type": "float"},
+      "leaky_alpha_after_residual_add": {"path": "model.leaky_relu_alpha_after_residual_add", "type": "float"},
+      "conv_l2_reg": {"path": "model.conv_l2_reg", "type": "float"},
+      "num_bilstm_layers": {"path": "model.num_bilstm_layers", "type": "int"},
+      "lstm_units": {"path": "model.lstm_units", "type": "int"},
+      "lstm_l2_reg": {"path": "model.lstm_l2_reg", "type": "float"},
+      "optimizer_lr": {"path": "model.optimizer_lr", "type": "float"},
+      "output_l2_reg": {"path": "model.output_l2_reg", "type": "float"}
+    },
+    "toggles": {
+      "disable_mixed_precision": {"path": "runtime.mixed_precision.enabled", "value": false}
+    }
+  }
+}
