@@ -1,9 +1,9 @@
 """Shared chronological data loader for FX time series experiments."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, fields, replace
 from pathlib import Path
-from typing import Tuple
+from typing import Any, Tuple
 
 import numpy as np
 import pandas as pd
@@ -60,6 +60,30 @@ class DataLoaderArtifacts:
     target_column: str
 
 
+@dataclass(frozen=True)
+class LegacyLoaderOptions:
+    """Optional tweaks replicating historical data pre-processing quirks."""
+
+    feature_columns: Tuple[str, ...] = FEATURE_COLUMNS
+    target_column: str = TARGET_COLUMN
+    timestamp_column: str | None = None
+    timestamp_format: str | None = None
+    sort_by_timestamp: bool = False
+    drop_duplicate_timestamps: bool = False
+    duplicate_keep: str = "first"
+    dropna_columns: Tuple[str, ...] | None = None
+
+    def with_overrides(self, **overrides: Any) -> "LegacyLoaderOptions":
+        """Return a copy with selected fields replaced."""
+
+        valid_fields = {field.name for field in fields(self)}
+        invalid = set(overrides) - valid_fields
+        if invalid:
+            invalid_list = ", ".join(sorted(invalid))
+            raise TypeError(f"Invalid loader option override(s): {invalid_list}")
+        return replace(self, **overrides)
+
+
 class ChronologicalDataLoader:
     """Chronological DataLoader matching the legacy `v_*/DataLoader.py` contract."""
 
@@ -71,12 +95,19 @@ class ChronologicalDataLoader:
         train_ratio: float = 0.94,
         val_ratio: float = 0.03,
         test_ratio: float = 0.03,
+        options: LegacyLoaderOptions | None = None,
+        **option_overrides: Any,
     ) -> None:
         self.file_path = Path(file_path)
         self.time_steps = int(time_steps)
         self.train_ratio = float(train_ratio)
         self.val_ratio = float(val_ratio)
         self.test_ratio = float(test_ratio)
+
+        base_options = options or LegacyLoaderOptions()
+        self.options = base_options.with_overrides(**option_overrides)
+        self.feature_columns = tuple(self.options.feature_columns)
+        self.target_column = self.options.target_column
 
         if not np.isclose(self.train_ratio + self.val_ratio + self.test_ratio, 1.0):
             raise ValueError("Split ratios must sum to 1.0")
@@ -112,7 +143,7 @@ class ChronologicalDataLoader:
             X_test_raw, y_test_raw, feature_scaler, target_scaler
         )
 
-        num_features = X_train_scaled.shape[1]
+        num_features = len(self.feature_columns)
         train_partition = self._sequence_partition(X_train_scaled, y_train_scaled, num_features)
         val_partition = self._sequence_partition(X_val_scaled, y_val_scaled, num_features)
         test_partition = self._sequence_partition(X_test_scaled, y_test_scaled, num_features)
@@ -124,18 +155,61 @@ class ChronologicalDataLoader:
             feature_scaler=feature_scaler,
             target_scaler=target_scaler,
             split_metadata=split_metadata,
-            feature_columns=FEATURE_COLUMNS,
-            target_column=TARGET_COLUMN,
+            feature_columns=self.feature_columns,
+            target_column=self.target_column,
         )
+
+    def get_data(self) -> Tuple[np.ndarray, ...]:
+        """Legacy-compatible alias returning arrays plus the target scaler."""
+
+        artifacts = self.load()
+        return (
+            artifacts.train.features,
+            artifacts.val.features,
+            artifacts.test.features,
+            artifacts.train.target,
+            artifacts.val.target,
+            artifacts.test.target,
+            artifacts.target_scaler,
+        )
+
+    def create_sequences(
+        self, X_data: np.ndarray, y_data: np.ndarray
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """Expose the sliding-window sequence builder for legacy callers."""
+
+        num_features = X_data.shape[1] if X_data.ndim == 2 else len(self.feature_columns)
+        partition = self._sequence_partition(X_data, y_data, num_features)
+        return partition.features, partition.target
 
     def _load_frame(self) -> pd.DataFrame:
         if not self.file_path.exists():
             raise FileNotFoundError(f"File not found: {self.file_path}")
 
         frame = pd.read_csv(self.file_path)
-        if frame.isnull().values.any():
-            frame = frame.dropna()
-        return frame
+        frame = frame.dropna()
+
+        options = self.options
+        dropna_columns: Tuple[str, ...] | None = options.dropna_columns
+        if dropna_columns:
+            frame = frame.dropna(subset=list(dropna_columns))
+
+        if options.timestamp_column:
+            timestamp_series = pd.to_datetime(
+                frame[options.timestamp_column],
+                format=options.timestamp_format,
+                errors="coerce",
+            )
+            frame = frame.assign(**{options.timestamp_column: timestamp_series})
+            frame = frame.dropna(subset=[options.timestamp_column])
+            if options.sort_by_timestamp:
+                frame = frame.sort_values(options.timestamp_column, kind="mergesort")
+            if options.drop_duplicate_timestamps:
+                frame = frame.drop_duplicates(
+                    subset=[options.timestamp_column], keep=options.duplicate_keep
+                )
+
+        return frame.reset_index(drop=True)
 
     def _compute_split_metadata(self, total_rows: int) -> SplitMetadata:
         train_end = int(self.train_ratio * total_rows)
@@ -148,10 +222,10 @@ class ChronologicalDataLoader:
 
     def _extract(self, frame: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray]:
         if frame.empty:
-            return np.empty((0, len(FEATURE_COLUMNS))), np.empty((0, 1))
+            return np.empty((0, len(self.feature_columns))), np.empty((0, 1))
 
-        X = frame.loc[:, FEATURE_COLUMNS].values
-        y = frame.loc[:, TARGET_COLUMN].values.reshape(-1, 1)
+        X = frame.loc[:, self.feature_columns].values
+        y = frame.loc[:, self.target_column].values.reshape(-1, 1)
         return X, y
 
     def _transform_optional(
@@ -162,7 +236,7 @@ class ChronologicalDataLoader:
         target_scaler: StandardScaler,
     ) -> Tuple[np.ndarray, np.ndarray]:
         if X_raw.shape[0] == 0:
-            return np.empty((0, len(FEATURE_COLUMNS))), np.empty((0, 1))
+            return np.empty((0, len(self.feature_columns))), np.empty((0, 1))
         X_scaled = feature_scaler.transform(X_raw)
         y_scaled = target_scaler.transform(y_raw)
         return X_scaled, y_scaled
@@ -186,6 +260,7 @@ class ChronologicalDataLoader:
 __all__ = [
     "ChronologicalDataLoader",
     "DataLoaderArtifacts",
+    "LegacyLoaderOptions",
     "SequencedPartition",
     "SplitMetadata",
     "SplitBounds",

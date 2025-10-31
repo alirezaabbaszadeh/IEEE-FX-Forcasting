@@ -2,6 +2,7 @@
 from .loader import (
     ChronologicalDataLoader,
     DataLoaderArtifacts,
+    LegacyLoaderOptions,
     SequencedPartition,
     SplitBounds,
     SplitMetadata,
@@ -12,6 +13,7 @@ from .loader import (
 __all__ = [
     "ChronologicalDataLoader",
     "DataLoaderArtifacts",
+    "LegacyLoaderOptions",
     "SequencedPartition",
     "SplitBounds",
     "SplitMetadata",
