@@ -26,6 +26,11 @@ from src.core.orchestrator import (  # noqa: E402  # pylint: disable=wrong-impor
     OrchestratorDependencies,
     TimeSeriesOrchestrator,
 )
+from src.core.versioning.configuration import (  # noqa: E402  # pylint: disable=wrong-import-position
+    log_normalisation_warnings,
+    merge_cli_schema,
+    normalise_legacy_config,
+)
 
 
 def _load_yaml_module() -> Optional[Any]:
@@ -101,7 +106,9 @@ def resolve_path(path_value: Optional[str], base_dir: Path) -> Optional[str]:
     return str(path)
 
 
-def translate_cli_arguments(arguments: List[str], schema: Optional[Mapping[str, Any]]) -> Tuple[List[str], List[str]]:
+def translate_cli_arguments(
+    arguments: List[str], schema: Optional[Mapping[str, Any]]
+) -> Tuple[List[str], List[str]]:
     if not arguments or schema is None:
         return [], arguments
 
@@ -239,7 +246,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     config_path = Path(initial_args.config).expanduser().resolve()
     config_data = load_config(config_path)
 
-    cli_schema = config_data.get("cli")
+    cli_schema = merge_cli_schema(config_data.get("cli"))
     cli_overrides, leftover = translate_cli_arguments(remaining, cli_schema)
     if leftover:
         raise SystemExit(f"Unrecognised arguments: {' '.join(leftover)}")
@@ -270,12 +277,18 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         metadata.setdefault("config_version", version_tag)
     config_data["metadata"] = metadata
 
+    normalised = normalise_legacy_config(config_data)
+    config_data = normalised.payload
+
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)-8s] %(name)s: %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
     logger = logging.getLogger("run_experiment")
+
+    if normalised.warnings:
+        log_normalisation_warnings(logger, normalised.warnings)
 
     seed = initial_args.seed if initial_args.seed is not None else runtime_cfg.get("seed")
     if initial_args.mixed_precision is not None:

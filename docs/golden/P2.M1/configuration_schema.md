@@ -75,10 +75,15 @@ The new runner supports two mechanisms for overrides:
    - `--seed` / `--mixed-precision` / `--no-mixed-precision` /
      `--precision-policy`: override runtime execution settings
    - `--file-path` / `--base-dir`: shortcuts for the two most common paths
-2. Version-specific aliases declared under `cli.flags` and `cli.toggles`
+2. Shared aliases defined in `src/core/versioning/cli_schema.json` with optional
+   per-config overrides under `cli.flags`/`cli.toggles`
    - Flags map the historical CLI (e.g. `--epochs`) to a concrete config path
    - Toggles map boolean flags (e.g. `--disable_mixed_precision`) to a constant
      override (`true`/`false`)
+
+The shared schema provides canonical paths for every legacy flag while the
+normalisation pass mirrors values onto the legacy parameter names expected by
+the version-specific factories.【F:src/core/versioning/cli_schema.json†L1-L95】【F:src/core/versioning/configuration.py†L1-L188】
 
 After resolution all overrides are merged into the configuration and written to
 `hyperparameters_and_summary.json` by the orchestrator for reproducibility.
