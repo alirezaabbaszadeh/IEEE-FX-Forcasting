@@ -1,0 +1,11 @@
+{
+  "version": "v_10",
+  "document": "analysis.md",
+  "authors": [
+    "gpt-5-codex"
+  ],
+  "generated_on": "2025-10-31T22:22:26Z",
+  "validation_commands": [
+    "cat docs/golden/P0.M2/v_10/analysis.md"
+  ]
+}

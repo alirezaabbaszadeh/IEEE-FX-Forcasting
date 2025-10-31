@@ -1,0 +1,12 @@
+{
+  "version": "v_05",
+  "document": "inventory.md",
+  "authors": [
+    "gpt-5-codex"
+  ],
+  "generated_on": "2025-10-31T22:22:26Z",
+  "validation_commands": [
+    "sha256sum v_05/*",
+    "rg 'create_dependency_bundle' v_05/dependencies.py"
+  ]
+}
