@@ -1,74 +1,43 @@
-# iccke25-forex-hybrid
-A Synergistic Hybrid Architecture with Residual Attention and Mixture-of-Experts for Robust Hour-Ahead Forex Forecasting
-# A Synergistic Hybrid Architecture with Residual Attention and Mixture-of-Experts for Robust Hour-Ahead Forex Forecasting
+# IEEE FX Forecasting — Legacy Consolidation Workspace
 
-This repository contains the implementation of a **synergistic hybrid deep learning architecture** that leverages **Residual Attention** and a **Mixture-of-Experts (MoE)** framework for robust hour-ahead forecasting of foreign exchange (Forex) rates.
+This repository is a staging ground for **merging ten legacy Forex forecasting experiments (`v_01`–`v_10`) into a single, modular research platform**. The goal is to eliminate duplicated code, capture undocumented behaviours, and provide an auditable foundation for future peer-review cycles.
 
-## Table of Contents
+## Current Objective
 
-- [Overview](#overview)
-- [Features](#features)
-- [Architecture](#architecture)
-- [Installation](#installation)
-- [Usage](#usage)
-- [Dataset](#dataset)
-- [Results](#results)
-- [Contributing](#contributing)
-- [License](#license)
-- [Citation](#citation)
+- **Unify historical projects:** Consolidate disparate pipelines, scripts, and utilities so that shared capabilities live behind a common interface instead of being re-implemented for every experiment.
+- **Establish a modular architecture:** Define clear module boundaries (data ingestion, feature engineering, modelling, evaluation) that can be recomposed for new studies without destabilising existing results.
+- **Support reviewer expectations:** Document provenance, configuration, and evaluation flows so that research outputs can be defended and extended when addressing reviewer feedback.
 
-## Overview
+These objectives are derived from the legacy analysis captured in `agent.md`, `golden_rewrite_brainstorm.md`, and `golden_rewrite_execution_plan.md`.
 
-Accurate and robust forecasting of Forex rates is vital for financial institutions and traders. This project proposes a hybrid model combining residual attention mechanisms with a mixture-of-experts ensemble to improve hour-ahead exchange rate predictions. The architecture synergizes deep learning capabilities for feature extraction and expert aggregation for prediction robustness.
+## Repository Structure
 
-## Features
+```
+v_01/ … v_10/      Legacy experiment variants awaiting consolidation
+agent.md           Operating principles for catalogue-first refactoring
+golden_*/          Brainstorm and execution plan for the golden rewrite
+```
 
-- **Residual Attention Mechanisms:** Enhance feature learning and focus on critical patterns.
-- **Mixture-of-Experts (MoE):** Ensemble of specialized neural networks for robust, diverse predictions.
-- **Time-Series Forecasting:** Designed for financial sequence data (Forex).
-- **Fully implemented in Python.**
+Each `v_*` directory contains an isolated snapshot of the historical pipeline. Part of the consolidation effort is to catalogue the differences across these directories before extracting reusable components.
 
-## Architecture
+## Workstream Highlights
 
-![Architecture Diagram](docs/architecture.png) 
+The high-level execution roadmap lives in [`golden_rewrite_execution_plan.md`](golden_rewrite_execution_plan.md). Current focus areas include:
 
-- **Input:** Historical Forex data (OHLCV, technical indicators, etc.)
-- **Feature Extraction:** Deep neural networks with residual attention layers.
-- **Experts:** Multiple specialized subnetworks.
-- **Gating Network:** Dynamically combines experts' outputs.
-- **Output:** Hour-ahead Forex rate forecast.
+1. **Legacy Inventory:** Freeze the state of all versions, enumerate entry points, and capture dependency footprints.
+2. **Experiment Flow Trace:** Diagram data preparation, training, and evaluation to surface inconsistencies and leakage risks.
+3. **Requirements & Migration Strategy:** Translate reviewer-facing requirements into modular design tasks and sequence the extraction of shared infrastructure.
 
-## Installation
-
-1. **Clone the repository**
-   ```bash
-   git clone https://github.com/alirezaabbaszadeh/iccke25-forex-hybrid.git
-   cd iccke25-forex-hybrid
-   ```
-## Dataset
-
-- The model expects time-series Forex data with standard features (e.g., Open, High, Low, Close, Volume).
-- Example data format:
-  ```
-  Timestamp,Open,High,Low,Close,Volume
-  2024-01-01 00:00,1.1234,1.1250,1.1220,1.1240,1000
-  ...
-  ```
-
-*(Replace with your actual results and metrics.)*
+Progress artefacts will be published under `docs/golden/<milestone_id>/` as milestones move from planning to acceptance.
 
 ## Contributing
 
-Contributions are welcome! Please open an issue or submit a pull request.
+Contributions should prioritise documentation, analysis, and refactoring plans until the legacy landscape is fully mapped. When proposing changes:
+
+- Reference the relevant milestone in `golden_rewrite_execution_plan.md`.
+- Include evidence (notes, diagrams, tables) that explains how the change advances the consolidation goal.
+- Avoid introducing new external dependencies until the unified architecture is baselined.
 
 ## License
 
-This project is licensed under the MIT License. See [LICENSE](LICENSE) for details.
-
-## Citation
-
-If you use this code or architecture in your research, please cite:
-
-```
-
-```
+This project is released under the [MIT License](LICENSE).

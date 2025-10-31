@@ -1,7 +1,7 @@
 # Golden Rewrite Execution Plan
 
 ## Overview
-This document translates the brainstormed objectives into an actionable, trackable execution roadmap. It is intended to be maintained alongside `agent.md` and `golden_rewrite_brainstorm.md` so that every contributor can see the current stage, responsibilities, and acceptance criteria.
+This document translates the brainstormed objectives into an actionable, trackable execution roadmap for **consolidating the ten legacy Forex forecasting projects into a single modular platform**. It is intended to be maintained alongside `agent.md` and `golden_rewrite_brainstorm.md` so that every contributor can see the current stage, responsibilities, and acceptance criteria while we replace duplicated project silos with a coherent, reviewer-ready system.
 
 - **Governance Rhythm:** Weekly steering review with the Technical Lead (TL), Research Lead (RL), and Quality & Compliance Lead (QL). Daily async status updates in the project tracker referencing milestone IDs below.
 - **Milestone States:** `Planned → In Progress → Under Review → Accepted`. Progression requires meeting every acceptance criterion and capturing evidence in the repository (`docs/` or `reports/`).
