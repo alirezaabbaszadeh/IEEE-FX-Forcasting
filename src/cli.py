@@ -10,7 +10,14 @@ import hydra
 from hydra.utils import get_original_cwd
 from omegaconf import DictConfig, OmegaConf
 
-from src.data.dataset import DataConfig, create_dataloaders, prepare_datasets
+from src.data.dataset import (
+    CalendarConfig,
+    DataConfig,
+    TimezoneConfig,
+    WalkForwardSettings,
+    create_dataloaders,
+    prepare_datasets,
+)
 from src.experiments.multirun import RunResult, run_multirun
 from src.models.forecasting import ModelConfig, TemporalForecastingModel
 from src.training.engine import TrainerConfig, train
@@ -30,19 +37,36 @@ def _slugify(value: str) -> str:
 
 
 def _build_data_config(cfg: DictConfig, root: Path) -> DataConfig:
+    timezone_cfg = TimezoneConfig(
+        source=str(cfg.timezone.source),
+        normalise_to=str(cfg.timezone.normalise_to),
+    )
+    calendar_cfg = CalendarConfig(
+        primary=cfg.calendar.get("primary"),
+        fallback=cfg.calendar.get("fallback"),
+    )
+    walkforward_cfg = WalkForwardSettings(
+        train=int(cfg.walkforward.train),
+        val=int(cfg.walkforward.val),
+        test=int(cfg.walkforward.test),
+        step=None if cfg.walkforward.get("step") in (None, "null") else int(cfg.walkforward.step),
+        embargo=int(cfg.walkforward.embargo),
+    )
     return DataConfig(
         csv_path=root / cfg.csv_path,
         feature_columns=list(cfg.feature_columns),
         target_column=cfg.target_column,
+        timestamp_column=cfg.timestamp_column,
+        pair_column=cfg.pair_column,
         pairs=list(cfg.pairs),
         horizons=list(cfg.horizons),
         time_steps=cfg.time_steps,
-        train_ratio=cfg.train_ratio,
-        val_ratio=cfg.val_ratio,
-        test_ratio=cfg.test_ratio,
         batch_size=cfg.batch_size,
         num_workers=cfg.num_workers,
         shuffle_train=cfg.shuffle_train,
+        timezone=timezone_cfg,
+        calendar=calendar_cfg,
+        walkforward=walkforward_cfg,
     )
 
 
@@ -87,7 +111,13 @@ def _run_training_once(cfg: DictConfig, original_cwd: Path, metadata: dict[str, 
     data_cfg = _build_data_config(cfg.data, original_cwd)
     LOGGER.info("Configured pairs: %s | horizons: %s", data_cfg.pairs, data_cfg.horizons)
     datasets = prepare_datasets(data_cfg)
-    dataloaders = create_dataloaders(datasets, data_cfg)
+    first_key, first_window = next(iter(datasets.items()))
+    LOGGER.info(
+        "Using window %s for initial training loop (total windows: %d)",
+        first_key,
+        len(datasets),
+    )
+    dataloaders = create_dataloaders(first_window, data_cfg)
 
     model_cfg = _build_model_config(cfg.model, len(data_cfg.feature_columns), data_cfg.time_steps)
     model = TemporalForecastingModel(model_cfg)

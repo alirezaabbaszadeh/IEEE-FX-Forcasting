@@ -1,3 +1,6 @@
+defaults:
+  - schema/data
+
 seed: 42
 
 logging:
@@ -7,15 +10,26 @@ data:
   csv_path: data/sample.csv
   feature_columns: [Open, High, Low, Close]
   target_column: Close
+  timestamp_column: timestamp
+  pair_column: pair
   pairs: [EURUSD, GBPUSD]
   horizons: [1, 5, 10]
   time_steps: 32
-  train_ratio: 0.9
-  val_ratio: 0.05
-  test_ratio: 0.05
   batch_size: 64
   num_workers: 0
   shuffle_train: true
+  timezone:
+    source: UTC
+    normalise_to: UTC
+  calendar:
+    primary: null
+    fallback: null
+  walkforward:
+    train: 256
+    val: 64
+    test: 64
+    step: 64
+    embargo: 8
 
 model:
   hidden_size: 128

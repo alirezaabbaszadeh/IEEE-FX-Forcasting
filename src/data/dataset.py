@@ -2,9 +2,9 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterable, List, Sequence, Tuple
+from typing import Dict, Iterable, Sequence
 
 import numpy as np
 import pandas as pd
@@ -16,34 +16,73 @@ LOGGER = logging.getLogger(__name__)
 
 
 @dataclass
+class TimezoneConfig:
+    """Timezone settings for normalising timestamp columns."""
+
+    source: str = "UTC"
+    normalise_to: str = "UTC"
+
+
+@dataclass
+class CalendarConfig:
+    """Information about the trading calendar sources used for alignment."""
+
+    primary: str | None = None
+    fallback: str | None = None
+
+
+@dataclass
+class WalkForwardSettings:
+    """Hyperparameters governing walk-forward window construction."""
+
+    train: int
+    val: int
+    test: int
+    step: int | None = None
+    embargo: int = 0
+
+    def validate(self) -> None:
+        if self.train <= 0 or self.val <= 0 or self.test <= 0:
+            raise ValueError("train, val and test window sizes must be positive integers")
+        if self.step is not None and self.step <= 0:
+            raise ValueError("step must be a positive integer when provided")
+        if self.embargo < 0:
+            raise ValueError("embargo cannot be negative")
+
+
+@dataclass
 class DataConfig:
     """Configuration required to materialise the training datasets."""
 
     csv_path: Path
     feature_columns: Sequence[str]
     target_column: str
+    timestamp_column: str = "timestamp"
+    pair_column: str = "pair"
     pairs: Sequence[str] = ()
     horizons: Sequence[int] = (1,)
     time_steps: int = 32
-    train_ratio: float = 0.9
-    val_ratio: float = 0.05
-    test_ratio: float = 0.05
     batch_size: int = 64
     num_workers: int = 0
     shuffle_train: bool = True
+    timezone: TimezoneConfig = field(default_factory=TimezoneConfig)
+    calendar: CalendarConfig = field(default_factory=CalendarConfig)
+    walkforward: WalkForwardSettings | None = None
 
     def validate(self) -> None:
-        total = self.train_ratio + self.val_ratio + self.test_ratio
-        if not np.isclose(total, 1.0):
-            raise ValueError(
-                "Train/val/test ratios must sum to 1.0. "
-                f"Received {self.train_ratio}, {self.val_ratio}, {self.test_ratio}."
-            )
         if self.time_steps <= 0:
             raise ValueError("time_steps must be a positive integer")
+        if not self.pairs:
+            raise ValueError("At least one trading pair must be specified")
+        if not self.horizons:
+            raise ValueError("At least one forecasting horizon must be specified")
 
         if not Path(self.csv_path).exists():
             raise FileNotFoundError(f"CSV file not found at {self.csv_path}")
+
+        if self.walkforward is None:
+            raise ValueError("walkforward configuration must be provided")
+        self.walkforward.validate()
 
 
 class SequenceDataset(Dataset):
@@ -63,15 +102,16 @@ class SequenceDataset(Dataset):
 
 
 @dataclass
-class PreparedData:
+class WindowedData:
     train: SequenceDataset
     val: SequenceDataset
     test: SequenceDataset
     feature_scaler: StandardScaler
     target_scaler: StandardScaler
+    metadata: dict[str, object]
 
 
-def create_dataloaders(data: PreparedData, cfg: DataConfig) -> dict[str, DataLoader]:
+def create_dataloaders(data: WindowedData, cfg: DataConfig) -> dict[str, DataLoader]:
     """Materialise PyTorch dataloaders with consistent settings."""
 
     return {
@@ -96,84 +136,27 @@ def create_dataloaders(data: PreparedData, cfg: DataConfig) -> dict[str, DataLoa
     }
 
 
-def load_dataframe(csv_path: Path, feature_columns: Iterable[str], target_column: str) -> pd.DataFrame:
+def load_dataframe(cfg: DataConfig) -> pd.DataFrame:
     """Load and validate the raw dataframe."""
 
-    LOGGER.info("Loading data from %s", csv_path)
-    df = pd.read_csv(csv_path)
-    missing = [col for col in list(feature_columns) + [target_column] if col not in df.columns]
+    LOGGER.info("Loading data from %s", cfg.csv_path)
+    df = pd.read_csv(cfg.csv_path)
+    required_columns = set(cfg.feature_columns) | {cfg.target_column, cfg.timestamp_column, cfg.pair_column}
+    missing = [col for col in required_columns if col not in df.columns]
     if missing:
         raise KeyError(f"Columns missing from dataset: {missing}")
-    df = df.dropna(subset=list(feature_columns) + [target_column])
+    df = df.dropna(subset=list(required_columns))
     LOGGER.debug("Loaded dataframe shape: %s", df.shape)
     return df
 
 
-def _split_indices(length: int, cfg: DataConfig) -> Tuple[slice, slice, slice]:
-    train_end = int(length * cfg.train_ratio)
-    val_end = train_end + int(length * cfg.val_ratio)
-    return slice(0, train_end), slice(train_end, val_end), slice(val_end, length)
+def prepare_datasets(cfg: DataConfig) -> Dict[tuple[str, object, int], WindowedData]:
+    """Load CSV data and generate walk-forward window datasets keyed by metadata."""
 
-
-def _create_sequences(values: np.ndarray, targets: np.ndarray, time_steps: int) -> Tuple[np.ndarray, np.ndarray]:
-    if len(values) <= time_steps:
-        LOGGER.warning(
-            "Not enough rows (%s) to build sequences with %s time steps. Returning empty arrays.",
-            len(values),
-            time_steps,
-        )
-        num_features = values.shape[1]
-        return np.empty((0, time_steps, num_features), dtype=np.float32), np.empty((0, 1), dtype=np.float32)
-
-    xs: List[np.ndarray] = []
-    ys: List[np.ndarray] = []
-    for start in range(len(values) - time_steps):
-        end = start + time_steps
-        xs.append(values[start:end])
-        ys.append(targets[end])
-
-    sequences = np.stack(xs, axis=0)
-    y_array = np.stack(ys, axis=0)
-    return sequences.astype(np.float32), y_array.astype(np.float32)
-
-
-def prepare_datasets(cfg: DataConfig) -> PreparedData:
-    """Load a CSV file and return scaled `SequenceDataset` objects."""
+    from src.data.walkforward import WalkForwardSplitter
 
     cfg.validate()
-    df = load_dataframe(cfg.csv_path, cfg.feature_columns, cfg.target_column)
+    df = load_dataframe(cfg)
 
-    feature_values = df.loc[:, cfg.feature_columns].to_numpy(dtype=np.float32)
-    target_values = df.loc[:, cfg.target_column].to_numpy(dtype=np.float32).reshape(-1, 1)
-
-    train_slice, val_slice, test_slice = _split_indices(len(df), cfg)
-
-    x_train_raw = feature_values[train_slice]
-    y_train_raw = target_values[train_slice]
-
-    feature_scaler = StandardScaler().fit(x_train_raw)
-    target_scaler = StandardScaler().fit(y_train_raw)
-
-    def scale_and_window(data_slice: slice) -> Tuple[np.ndarray, np.ndarray]:
-        x_scaled = feature_scaler.transform(feature_values[data_slice])
-        y_scaled = target_scaler.transform(target_values[data_slice])
-        return _create_sequences(x_scaled, y_scaled, cfg.time_steps)
-
-    train_seq, train_targets = scale_and_window(train_slice)
-    val_seq, val_targets = scale_and_window(val_slice)
-    test_seq, test_targets = scale_and_window(test_slice)
-
-    LOGGER.info(
-        "Prepared datasets - train: %s, val: %s, test: %s",
-        train_seq.shape,
-        val_seq.shape,
-        test_seq.shape,
-    )
-
-    return PreparedData(
-        train=SequenceDataset(train_seq, train_targets),
-        val=SequenceDataset(val_seq, val_targets),
-        test=SequenceDataset(test_seq, test_targets),
-        feature_scaler=feature_scaler,
-        target_scaler=target_scaler,
-    )
+    splitter = WalkForwardSplitter(cfg)
+    return splitter(df)

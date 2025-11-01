@@ -1,11 +1,25 @@
 """Data utilities for loading and windowing FX time-series."""
 
-from .dataset import DataConfig, PreparedData, SequenceDataset, create_dataloaders, prepare_datasets
+from .dataset import (
+    CalendarConfig,
+    DataConfig,
+    SequenceDataset,
+    TimezoneConfig,
+    WalkForwardSettings,
+    WindowedData,
+    create_dataloaders,
+    prepare_datasets,
+)
+from .walkforward import WalkForwardSplitter
 
 __all__ = [
+    "CalendarConfig",
     "DataConfig",
-    "PreparedData",
     "SequenceDataset",
+    "TimezoneConfig",
+    "WalkForwardSettings",
+    "WindowedData",
+    "WalkForwardSplitter",
     "create_dataloaders",
     "prepare_datasets",
 ]
