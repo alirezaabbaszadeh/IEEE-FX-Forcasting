@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Dict, Iterable, Optional
+from typing import Dict, Iterable, Optional, TYPE_CHECKING
 
 LOGGER = logging.getLogger(__name__)
 
@@ -22,9 +22,21 @@ def _log_training_metadata(metadata: dict[str, object] | None) -> None:
             continue
         LOGGER.debug("Training metadata detail - %s: %s", key, value)
 
-import torch
-from torch import nn
-from torch.utils.data import DataLoader
+if TYPE_CHECKING:  # pragma: no cover - type checking only
+    import torch
+    from torch import nn
+    from torch.utils.data import DataLoader
+else:  # pragma: no cover - optional dependency handling
+    try:
+        import torch
+        from torch import nn
+        from torch.utils.data import DataLoader
+    except ModuleNotFoundError:  # pragma: no cover - fallback for environments without torch
+        torch = None  # type: ignore[assignment]
+        nn = None  # type: ignore[assignment]
+
+        class DataLoader:  # type: ignore[override]
+            pass
 
 @dataclass
 class TrainerConfig:
@@ -51,6 +63,8 @@ class TrainingSummary:
 
 
 def _resolve_device(requested: str) -> torch.device:
+    if torch is None:  # pragma: no cover - safeguard for optional dependency
+        raise ImportError("PyTorch is required to resolve training devices")
     if requested == "auto":
         return torch.device("cuda" if torch.cuda.is_available() else "cpu")
     return torch.device(requested)
@@ -62,6 +76,8 @@ def _calculate_loss_sum(
     criterion: nn.Module,
     device: torch.device,
 ) -> tuple[float, float]:
+    if torch is None:  # pragma: no cover - safeguard for optional dependency
+        raise ImportError("PyTorch is required to calculate losses")
     total_loss = 0.0
     total_mae = 0.0
     total_samples = 0
@@ -95,6 +111,9 @@ def train(
     metadata: Optional[dict[str, object]] = None,
 ) -> TrainingSummary:
     """Train a model using mean-squared-error loss and report validation metrics."""
+
+    if torch is None or nn is None:  # pragma: no cover - safeguard for optional dependency
+        raise ImportError("PyTorch is required to run training")
 
     device = _resolve_device(cfg.device)
     LOGGER.info("Using device: %s", device)
