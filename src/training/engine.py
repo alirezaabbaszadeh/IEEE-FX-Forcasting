@@ -5,12 +5,26 @@ import logging
 from dataclasses import dataclass, field
 from typing import Dict, Iterable, Optional
 
+LOGGER = logging.getLogger(__name__)
+
+
+def _log_training_metadata(metadata: dict[str, object] | None) -> None:
+    if not metadata:
+        return
+
+    keys_to_highlight = ("config_hash", "git_sha", "hardware")
+    for key in keys_to_highlight:
+        if key in metadata:
+            LOGGER.info("Training metadata - %s: %s", key, metadata[key])
+
+    for key, value in metadata.items():
+        if key in keys_to_highlight:
+            continue
+        LOGGER.debug("Training metadata detail - %s: %s", key, value)
+
 import torch
 from torch import nn
 from torch.utils.data import DataLoader
-
-LOGGER = logging.getLogger(__name__)
-
 
 @dataclass
 class TrainerConfig:
@@ -33,6 +47,7 @@ class EpochMetrics:
 class TrainingSummary:
     epochs: Iterable[EpochMetrics] = field(default_factory=list)
     best_val_loss: float = float("inf")
+    device: str | None = None
 
 
 def _resolve_device(requested: str) -> torch.device:
@@ -77,11 +92,16 @@ def train(
     model: nn.Module,
     dataloaders: Dict[str, DataLoader],
     cfg: TrainerConfig,
+    metadata: Optional[dict[str, object]] = None,
 ) -> TrainingSummary:
     """Train a model using mean-squared-error loss and report validation metrics."""
 
     device = _resolve_device(cfg.device)
     LOGGER.info("Using device: %s", device)
+    if metadata is None:
+        metadata = {}
+    metadata.setdefault("device", str(device))
+    _log_training_metadata(metadata)
     model.to(device)
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.learning_rate, weight_decay=cfg.weight_decay)
@@ -146,4 +166,4 @@ def train(
             val_mae,
         )
 
-    return TrainingSummary(epochs=history, best_val_loss=best_val_loss)
+    return TrainingSummary(epochs=history, best_val_loss=best_val_loss, device=str(device))
