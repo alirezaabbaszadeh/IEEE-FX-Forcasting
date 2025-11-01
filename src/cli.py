@@ -2,14 +2,19 @@
 from __future__ import annotations
 
 import argparse
+import importlib
 import logging
 import sys
 from pathlib import Path
+from typing import Iterable, List, Mapping, Optional
 
 import hydra
+import pandas as pd
+import torch
 from hydra.utils import get_original_cwd
 from omegaconf import DictConfig, OmegaConf
 
+from src.analysis.interpretability import MarketEvent, analyse_market_events
 from src.data.dataset import (
     CalendarConfig,
     DataConfig,
@@ -100,6 +105,81 @@ def _prepare_metadata(cfg: DictConfig) -> dict[str, object]:
         "git_sha": get_git_revision(),
         "hardware": get_hardware_snapshot(),
     }
+
+
+def _load_events(path: Path) -> List[MarketEvent]:
+    payload = torch.load(path)
+    if isinstance(payload, dict) and "events" in payload:
+        raw_events = payload["events"]
+    else:
+        raw_events = payload
+
+    events: List[MarketEvent] = []
+    for idx, item in enumerate(raw_events):
+        if isinstance(item, MarketEvent):
+            events.append(item)
+            continue
+        if not isinstance(item, Mapping):
+            raise TypeError("Events must be dictionaries or MarketEvent instances")
+        if "inputs" not in item:
+            raise KeyError("Each event must include an 'inputs' tensor")
+        event_id = str(item.get("event_id", f"event-{idx}"))
+        metadata = item.get("metadata") or {}
+        events.append(
+            MarketEvent(
+                event_id=event_id,
+                inputs=item["inputs"],
+                baseline=item.get("baseline"),
+                metadata=metadata,
+                token_labels=item.get("token_labels"),
+                feature_names=item.get("feature_names"),
+            )
+        )
+    return events
+
+
+def run_interpret_command(
+    *,
+    model_module: str,
+    model_factory: str,
+    events_path: Path,
+    output_dir: Path,
+    seed: int,
+    limit: Optional[int] = None,
+    device: Optional[str] = None,
+) -> Path:
+    LOGGER.info("Loading interpretability model via %s.%s", model_module, model_factory)
+    seed_everything(seed)
+
+    module = importlib.import_module(model_module)
+    factory = getattr(module, model_factory, None)
+    if factory is None:
+        raise AttributeError(f"Factory '{model_factory}' not found in module '{model_module}'")
+    model = factory()
+    if not hasattr(model, "register_attention_hook"):
+        raise AttributeError("Model must expose 'register_attention_hook' for interpretability")
+    if not hasattr(model, "expert_activation_summaries"):
+        raise AttributeError("Model must expose 'expert_activation_summaries' for interpretability")
+
+    events = _load_events(events_path)
+    if limit is not None:
+        events = events[:limit]
+    if not events:
+        raise ValueError("No events provided for interpretability analysis")
+
+    device_obj = torch.device(device) if device else None
+    results, metadata = analyse_market_events(model, events, output_dir, device=device_obj)
+
+    metadata = metadata.assign(
+        seed=seed,
+        model_module=model_module,
+        model_factory=model_factory,
+        event_count=len(results),
+    )
+    metadata_path = Path(output_dir) / "metadata.csv"
+    metadata.to_csv(metadata_path, index=False)
+    LOGGER.info("Saved interpretability metadata to %s", metadata_path)
+    return metadata_path
 
 
 def _run_training_once(cfg: DictConfig, original_cwd: Path, metadata: dict[str, object]) -> RunResult:
@@ -203,6 +283,38 @@ def _hydra_multirun(cfg: DictConfig) -> None:
 
 
 def main() -> None:  # pragma: no cover - thin argparse wrapper
+    if len(sys.argv) > 1 and sys.argv[1] == "interpret":
+        parser = argparse.ArgumentParser(description="Run interpretability analyses")
+        parser.add_argument("interpret", help=argparse.SUPPRESS)
+        parser.add_argument("--model-module", required=True, help="Module path exposing the model factory")
+        parser.add_argument(
+            "--model-factory",
+            default="build_model",
+            help="Factory function returning an instantiated model",
+        )
+        parser.add_argument("--events", required=True, type=Path, help="Path to a torch-saved events file")
+        parser.add_argument(
+            "--output-dir",
+            type=Path,
+            default=Path("artifacts/interpretability"),
+            help="Directory where artefacts will be written",
+        )
+        parser.add_argument("--seed", type=int, default=7, help="Seed for deterministic artefacts")
+        parser.add_argument("--limit", type=int, help="Optional limit on the number of events to process")
+        parser.add_argument("--device", help="Optional torch device for execution")
+        args = parser.parse_args()
+
+        run_interpret_command(
+            model_module=args.model_module,
+            model_factory=args.model_factory,
+            events_path=args.events,
+            output_dir=args.output_dir,
+            seed=args.seed,
+            limit=args.limit,
+            device=args.device,
+        )
+        return
+
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--multirun", action="store_true", help="launch repeated runs across seeds")
     args, remaining = parser.parse_known_args()
