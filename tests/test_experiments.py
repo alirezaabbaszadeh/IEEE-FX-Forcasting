@@ -41,13 +41,26 @@ def test_statistical_analysis_outputs(tmp_path: Path) -> None:
     tables = analyzer.analyze(metrics, baseline="baseline")
 
     stats_dir = tmp_path / "analysis" / "stats"
-    expected_files = {"anova", "welch", "kruskal", "effect_sizes", "diebold_mariano"}
-    assert expected_files == {path.stem for path in stats_dir.iterdir()}
+    expected_files = {
+        "anova",
+        "welch",
+        "kruskal",
+        "effect_sizes",
+        "diebold_mariano",
+        "bootstrap_ci",
+        "posthoc_tukey",
+        "posthoc_dunn",
+        "model_confidence_set",
+    }
+    assert expected_files == {path.stem for path in stats_dir.iterdir() if path.suffix == ".csv"}
 
     effect_sizes = tables["effect_sizes"]
     assert set(effect_sizes.columns) >= {"cohens_d", "hedges_g", "glass_delta", "rank_biserial"}
     dm_table = tables["diebold_mariano"]
-    assert "dm_stat" in dm_table.columns
+    assert {"dm_stat", "variance"}.issubset(dm_table.columns)
+
+    bootstrap = tables["bootstrap_ci"]
+    assert {"estimate", "lower", "upper", "coverage"}.issubset(bootstrap.columns)
 
 
 def test_hyperparameter_search_stub(tmp_path: Path) -> None:
