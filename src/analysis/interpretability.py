@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import argparse
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Mapping, MutableMapping, Optional, Sequence, Tuple
 
@@ -43,6 +43,30 @@ class AttributionResult:
     figure_path: Optional[Path]
 
 
+@dataclass
+class MarketEvent:
+    """Container describing a market event to analyse."""
+
+    event_id: str
+    inputs: Tensor
+    baseline: Optional[Tensor] = None
+    metadata: Mapping[str, object] = field(default_factory=dict)
+    token_labels: Optional[Sequence[str]] = None
+    feature_names: Optional[Sequence[str]] = None
+
+
+@dataclass
+class MarketEventArtifactSummary:
+    """Summary of assets generated for a market event."""
+
+    event_id: str
+    output_dir: Path
+    attention: List[AttentionHeatmapResult]
+    expert_trace: ExpertTraceResult
+    attribution: AttributionResult
+    metadata: Mapping[str, object]
+
+
 def _default_token_labels(length: int) -> List[str]:
     return [f"t{idx}" for idx in range(length)]
 
@@ -67,6 +91,10 @@ def _collect_attention_weights(
 
     attention_store: MutableMapping[int, List[np.ndarray]] = {}
     device = device or next(model.parameters()).device
+
+    reset = getattr(model, "reset_expert_statistics", None)
+    if callable(reset):
+        reset()
 
     def hook(weights: Tensor, context: Mapping[str, object]) -> None:
         layer_idx = int(context.get("layer_index", len(attention_store)))
@@ -283,6 +311,81 @@ def compute_gradient_attributions(
         figure_path = output_path
 
     return AttributionResult(table=table, figure_path=figure_path)
+
+
+def _slugify(value: object) -> str:
+    return str(value).replace(" ", "_").replace("/", "_").lower()
+
+
+def analyse_market_events(
+    model: nn.Module,
+    events: Sequence[MarketEvent],
+    output_root: Path,
+    *,
+    device: Optional[torch.device] = None,
+) -> Tuple[List[MarketEventArtifactSummary], pd.DataFrame]:
+    """Generate interpretability artefacts for a batch of events."""
+
+    output_root = Path(output_root)
+    output_root.mkdir(parents=True, exist_ok=True)
+    results: List[MarketEventArtifactSummary] = []
+    metadata_records: List[Dict[str, object]] = []
+
+    for index, event in enumerate(events):
+        event_dir = output_root / _slugify(event.event_id or f"event-{index}")
+        attention_dir = event_dir / "attention"
+        experts_dir = event_dir / "experts"
+        attrib_dir = event_dir / "attributions"
+
+        heatmaps = generate_attention_heatmaps(
+            model,
+            event.inputs,
+            attention_dir,
+            token_labels=event.token_labels,
+            device=device,
+        )
+
+        trace = generate_expert_utilization_trace(model, experts_dir)
+        experts_dir.mkdir(parents=True, exist_ok=True)
+        trace_csv = experts_dir / "utilization.csv"
+        trace.table.to_csv(trace_csv, index=False)
+
+        attribution = compute_gradient_attributions(
+            model,
+            event.inputs,
+            baseline=event.baseline,
+            feature_names=event.feature_names,
+            output_path=attrib_dir / "mean_attribution.svg",
+            device=device,
+        )
+        attribution.table.to_csv(attrib_dir / "attributions.csv", index=False)
+
+        result = MarketEventArtifactSummary(
+            event_id=event.event_id,
+            output_dir=event_dir,
+            attention=heatmaps,
+            expert_trace=trace,
+            attribution=attribution,
+            metadata=event.metadata,
+        )
+        results.append(result)
+
+        metadata_records.append(
+            {
+                "event_index": index,
+                "event_id": event.event_id,
+                "attention_count": len(heatmaps),
+                "attention_dir": str(attention_dir),
+                "expert_trace_csv": str(trace_csv),
+                "expert_trace_figure": str(trace.figure_path) if trace.figure_path else "",
+                "attribution_csv": str(attrib_dir / "attributions.csv"),
+                "attribution_figure": str(attribution.figure_path) if attribution.figure_path else "",
+                **{f"meta_{key}": value for key, value in (event.metadata or {}).items()},
+            }
+        )
+
+    metadata = pd.DataFrame.from_records(metadata_records)
+    return results, metadata
 
 
 def _build_demo_model(input_dim: int, seq_len: int) -> Tuple[nn.Module, Tensor]:

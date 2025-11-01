@@ -79,6 +79,31 @@ def _session_labels(timestamps: pd.Series) -> np.ndarray:
     return np.array(labels)
 
 
+def _compute_gating_entropy(frame: pd.DataFrame) -> np.ndarray | None:
+    gating_cols = [col for col in frame.columns if col.startswith("gate_prob_")]
+    if gating_cols:
+        probs = frame[gating_cols].to_numpy(dtype=float)
+        if probs.ndim != 2:  # pragma: no cover - sanity check
+            raise ValueError("Gate probability columns must form a 2D array")
+        sums = probs.sum(axis=1, keepdims=True)
+        sums[sums == 0.0] = 1.0
+        normalised = probs / sums
+        normalised = np.clip(normalised, 1e-8, 1.0)
+        return -np.sum(normalised * np.log(normalised), axis=1)
+    if "gating_entropy" in frame.columns:
+        return frame["gating_entropy"].to_numpy(dtype=float)
+    return None
+
+
+def _safe_correlation(x: np.ndarray, y: np.ndarray) -> float:
+    if len(x) < 2 or len(y) < 2:
+        return float("nan")
+    if np.allclose(x, x[0]) or np.allclose(y, y[0]):
+        return float("nan")
+    corr = np.corrcoef(x, y)
+    return float(corr[0, 1])
+
+
 def aggregate_metrics(predictions: pd.DataFrame, session_timezone: str = "UTC") -> pd.DataFrame:
     """Aggregate evaluation metrics across pairs, horizons and stratifications."""
 
@@ -92,7 +117,9 @@ def aggregate_metrics(predictions: pd.DataFrame, session_timezone: str = "UTC") 
     records: List[dict[str, object]] = []
     grouped = frame.groupby(["pair", "horizon"], sort=False)
     for (pair, horizon), group in grouped:
-        metrics = _base_metrics(group["y_true"].to_numpy(), group["y_pred"].to_numpy())
+        y_true = group["y_true"].to_numpy()
+        y_pred = group["y_pred"].to_numpy()
+        metrics = _base_metrics(y_true, y_pred)
         for metric_name, value in metrics.items():
             records.append(
                 {
@@ -102,6 +129,40 @@ def aggregate_metrics(predictions: pd.DataFrame, session_timezone: str = "UTC") 
                     "segment": "all",
                     "metric": metric_name,
                     "value": value,
+                    "count": len(group),
+                }
+            )
+        gating_entropy = _compute_gating_entropy(group)
+        if gating_entropy is not None and gating_entropy.size:
+            volatility = np.abs(y_true)
+            entropy_mean = float(np.mean(gating_entropy))
+            entropy_corr = _safe_correlation(gating_entropy, volatility)
+            LOGGER.info(
+                "Pair %s | horizon %s - gating entropy mean: %.4f | corr(|y_true|): %s",
+                pair,
+                horizon,
+                entropy_mean,
+                "nan" if np.isnan(entropy_corr) else f"{entropy_corr:.4f}",
+            )
+            records.append(
+                {
+                    "pair": pair,
+                    "horizon": horizon,
+                    "group": "interpretability",
+                    "segment": "gating",
+                    "metric": "entropy_mean",
+                    "value": entropy_mean,
+                    "count": len(group),
+                }
+            )
+            records.append(
+                {
+                    "pair": pair,
+                    "horizon": horizon,
+                    "group": "interpretability",
+                    "segment": "gating",
+                    "metric": "entropy_volatility_corr",
+                    "value": float(entropy_corr),
                     "count": len(group),
                 }
             )
