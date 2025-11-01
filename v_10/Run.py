@@ -5,9 +5,16 @@ import sys
 import logging
 import argparse
 import json
+from dataclasses import asdict, replace
 import tensorflow as tf
 from tensorflow.keras import mixed_precision, backend as K
 from MainClass import TimeSeriesModel
+from config import (
+    DataParameters,
+    TrainingParameters,
+    ModelBuilderConfig,
+    PipelineConfig,
+)
 
 # --- Constants and Initial Setup ---
 SEED = 42
@@ -52,61 +59,82 @@ def main(cli_args):
     script_base_dir = os.path.dirname(os.path.abspath(__file__))
     
     # --- Default Configurations for Version 10 (Corrected and Standardized) ---
-    default_data_file_path = os.path.join(script_base_dir, "csv/EURUSD_Candlestick_1_Hour_BID_01.01.2010-18.02.2025.csv")
-    default_time_steps = 3
-    default_train_ratio = 0.96
-    default_val_ratio = 0.02
-    default_test_ratio = 0.02
-    default_epochs = 60
-    default_batch_size = 5000
-
-    default_block_configs = [{'filters': 8, 'kernel_size': 3, 'pool_size': None}]
-    
-    default_model_params = {
-        'num_heads': 3, 'key_dim': 4,
-        'leaky_relu_alpha_res_block_1': 0.04, 'leaky_relu_alpha_res_block_2': 0.03,
-        'leaky_relu_alpha_after_add': 0.03, 'conv_l2_reg': 0.0,
-        'lstm_units': 200, 'recurrent_dropout_lstm': 0, 'lstm_l2_reg': 0.0,
-        'moe_num_experts': 12, 'moe_units': 64, 'moe_leaky_relu_alpha': 0.01,
-        'optimizer_lr': 0.01, 'optimizer_clipnorm': None
-    }
+    default_data_config = DataParameters(
+        file_path=os.path.join(
+            script_base_dir, "csv/EURUSD_Candlestick_1_Hour_BID_01.01.2010-18.02.2025.csv"
+        ),
+        time_steps=3,
+        train_ratio=0.96,
+        val_ratio=0.02,
+        test_ratio=0.02,
+    )
+    default_training_config = TrainingParameters(epochs=60, batch_size=5000)
+    default_model_builder_config = ModelBuilderConfig()
 
     # --- Override with CLI arguments ---
-    data_file_path = cli_args.data_file or default_data_file_path
-    time_steps = cli_args.time_steps or default_time_steps
-    epochs = cli_args.epochs or default_epochs
-    batch_size = cli_args.batch_size or default_batch_size
-    
-    model_builder_params = default_model_params.copy()
+    data_config = replace(
+        default_data_config,
+        file_path=cli_args.data_file or default_data_config.file_path,
+        time_steps=cli_args.time_steps or default_data_config.time_steps,
+    )
+
+    training_config = replace(
+        default_training_config,
+        epochs=cli_args.epochs or default_training_config.epochs,
+        batch_size=cli_args.batch_size or default_training_config.batch_size,
+    )
+
+    model_builder_config = ModelBuilderConfig(**asdict(default_model_builder_config))
     if cli_args.optimizer_lr:
-        model_builder_params['optimizer_lr'] = cli_args.optimizer_lr
-    
+        model_builder_config = replace(
+            model_builder_config, optimizer_lr=cli_args.optimizer_lr
+        )
+
     output_dir = cli_args.output_dir or os.path.join(script_base_dir, "IEEE_TNNLS_Runs_V10")
     os.makedirs(output_dir, exist_ok=True)
+
+    pipeline_config = PipelineConfig(
+        data=data_config,
+        training=training_config,
+        model_builder=model_builder_config,
+        base_dir=output_dir,
+    )
 
     # --- Comprehensive Final Configuration Logging ---
     SCRIPT_LOGGER.info("--- Final Configuration for Version 10 Run ---")
     SCRIPT_LOGGER.info(f"  Mixed Precision Enabled: {not cli_args.disable_mixed_precision}")
-    SCRIPT_LOGGER.info(f"  Data file path: {data_file_path}")
-    if not os.path.exists(data_file_path):
-        SCRIPT_LOGGER.error(f"CRITICAL: Data file not found: {data_file_path}. Exiting.")
+    SCRIPT_LOGGER.info(f"  Data file path: {pipeline_config.data.file_path}")
+    if not os.path.exists(pipeline_config.data.file_path):
+        SCRIPT_LOGGER.error(
+            f"CRITICAL: Data file not found: {pipeline_config.data.file_path}. Exiting."
+        )
         sys.exit(1)
     SCRIPT_LOGGER.info(f"  Run output base directory: {output_dir}")
-    SCRIPT_LOGGER.info(f"  Training Parameters: Epochs={epochs}, Batch Size={batch_size}")
-    SCRIPT_LOGGER.info(f"  Data Processing: Time Steps={time_steps}, Train Ratio={default_train_ratio}, Val Ratio={default_val_ratio}, Test Ratio={default_test_ratio}")
-    SCRIPT_LOGGER.info(f"  ModelBuilder V10 - Block Configurations: {json.dumps(default_block_configs, indent=4)}")
+    SCRIPT_LOGGER.info(
+        "  Training Parameters: Epochs=%s, Batch Size=%s",
+        pipeline_config.training.epochs,
+        pipeline_config.training.batch_size,
+    )
+    SCRIPT_LOGGER.info(
+        "  Data Processing: Time Steps=%s, Train Ratio=%s, Val Ratio=%s, Test Ratio=%s",
+        pipeline_config.data.time_steps,
+        pipeline_config.data.train_ratio,
+        pipeline_config.data.val_ratio,
+        pipeline_config.data.test_ratio,
+    )
+    SCRIPT_LOGGER.info(
+        "  ModelBuilder V10 - Block Configurations: %s",
+        json.dumps(pipeline_config.model_builder.block_configs, indent=4),
+    )
     SCRIPT_LOGGER.info(f"  ModelBuilder V10 - Other Architectural Hyperparameters:")
-    for key, value in model_builder_params.items():
+    model_builder_dict = asdict(pipeline_config.model_builder)
+    model_builder_dict.pop('block_configs', None)
+    for key, value in model_builder_dict.items():
         SCRIPT_LOGGER.info(f"    {key}: {value}")
 
     # --- Execute Pipeline ---
     try:
-        pipeline = TimeSeriesModel(
-            file_path=data_file_path, time_steps=time_steps,
-            train_ratio=default_train_ratio, val_ratio=default_val_ratio, test_ratio=default_test_ratio,
-            base_dir=output_dir, epochs=epochs, batch_size=batch_size,
-            block_configs=default_block_configs, model_builder_params=model_builder_params
-        )
+        pipeline = TimeSeriesModel(pipeline_config)
         pipeline.run()
         SCRIPT_LOGGER.info("🎉 Version 10 pipeline completed successfully.")
     except Exception as e:

@@ -8,6 +8,7 @@ import datetime
 import json
 import logging
 import time # For precise timing of operations
+from dataclasses import asdict
 import numpy as np # For numerical operations like argmin
 import tensorflow as tf # For TensorFlow/Keras specific types and operations
 from typing import Optional, List, Dict, Any, Tuple # For type hinting
@@ -19,6 +20,7 @@ from Trainer import Trainer         # Handles the training loop and callbacks
 from DataLoader import DataLoader     # Handles data loading and preprocessing
 from Evaluator import Evaluator       # Handles model evaluation and plotting
 from HistoryManager import HistoryManager # Manages saving/loading of training history
+from config import PipelineConfig
 
 # Module-level logger. The handlers (e.g., StreamHandler, FileHandler for the run)
 # are typically configured in Run.py (for console) and within this class (for run-specific file).
@@ -46,66 +48,28 @@ class TimeSeriesModel:
     8.  Saving the final trained model in multiple standard formats.
     """
 
-    def __init__(self,
-                 # Core pipeline parameters
-                 file_path: str,
-                 base_dir: str = "TimeSeries_Project_Runs/",
-                 # Data loading and splitting parameters
-                 time_steps: int = 60, # Default based on common practice, override in Run.py
-                 train_ratio: float = 0.94,
-                 val_ratio: float = 0.03,
-                 test_ratio: float = 0.03,
-                 # Model training parameters
-                 epochs: int = 20, # Default, override in Run.py
-                 batch_size: int = 1120, # Default, override in Run.py
-                 # Model architecture parameters (passed to ModelBuilder)
-                 block_configs: Optional[List[Dict[str, Any]]] = None, # For ModelBuilders that use it
-                 model_builder_params: Optional[Dict[str, Any]] = None,
-                 # Trainer callback configurations (passed to Trainer)
-                 early_stopping_patience: int = 20,
-                 reduce_lr_patience: int = 1,
-                 reduce_lr_factor: float = 0.1, # Default for ReduceLROnPlateau
-                 min_lr: float = 5e-7         # Default for ReduceLROnPlateau
-                 ):
-        """
-        Initializes the TimeSeriesModel pipeline orchestrator.
+    def __init__(self, config: PipelineConfig):
+        """Initializes the TimeSeriesModel pipeline orchestrator."""
 
-        Args:
-            file_path (str): Path to the CSV data file.
-            base_dir (str): Base directory to store all outputs for this and other runs.
-                            A timestamped subdirectory will be created here for the current run.
-            time_steps (int): Number of past time steps for input sequences (passed to DataLoader).
-            train_ratio (float): Proportion of data for the training set (passed to DataLoader).
-            val_ratio (float): Proportion of data for the validation set (passed to DataLoader).
-            test_ratio (float): Proportion of data for the test set (passed to DataLoader).
-            epochs (int): Number of training epochs (passed to Trainer).
-            batch_size (int): Batch size for training (passed to Trainer).
-            block_configs (Optional[List[Dict[str, Any]]]): Configuration for convolutional blocks,
-                passed to ModelBuilder. Structure depends on the specific ModelBuilder version.
-            model_builder_params (Optional[Dict[str, Any]]): Dictionary of other parameters
-                to be passed to the ModelBuilder constructor.
-            early_stopping_patience (int): Patience for the EarlyStopping callback (passed to Trainer).
-            reduce_lr_patience (int): Patience for the ReduceLROnPlateau callback (passed to Trainer).
-            reduce_lr_factor (float): Factor by which learning rate is reduced (passed to Trainer).
-            min_lr (float): Minimum learning rate for ReduceLROnPlateau (passed to Trainer).
-        """
-        self.file_path = file_path
-        self.base_dir = base_dir
-        self.epochs = epochs
-        self.batch_size = batch_size
-        self.block_configs = block_configs if block_configs is not None else []
-        self.model_builder_params = model_builder_params if model_builder_params is not None else {}
+        self.config = config
+        self.data_config = config.data
+        self.training_config = config.training
+        self.model_builder_config = config.model_builder
 
-        # Store data and callback parameters
-        self.time_steps = time_steps
-        self.train_ratio = train_ratio
-        self.val_ratio = val_ratio
-        self.test_ratio = test_ratio
-        
-        self.early_stopping_patience = early_stopping_patience
-        self.reduce_lr_patience = reduce_lr_patience
-        self.reduce_lr_factor = reduce_lr_factor
-        self.min_lr = min_lr
+        # Convenience attributes retained for backwards compatibility within this class
+        self.file_path = self.data_config.file_path
+        self.base_dir = config.base_dir
+        self.time_steps = self.data_config.time_steps
+        self.train_ratio = self.data_config.train_ratio
+        self.val_ratio = self.data_config.val_ratio
+        self.test_ratio = self.data_config.test_ratio
+
+        self.epochs = self.training_config.epochs
+        self.batch_size = self.training_config.batch_size
+        self.early_stopping_patience = self.training_config.early_stopping_patience
+        self.reduce_lr_patience = self.training_config.reduce_lr_patience
+        self.reduce_lr_factor = self.training_config.reduce_lr_factor
+        self.min_lr = self.training_config.min_lr
 
         # Initialize attributes that will be populated during the pipeline
         self.epoch_durations_list: List[float] = [] # To be populated by Trainer's EpochTimerCallback
@@ -119,8 +83,11 @@ class TimeSeriesModel:
 
         # --- Instantiate Helper Classes ---
         self.data_loader = DataLoader(
-            file_path=self.file_path, time_steps=self.time_steps,
-            train_ratio=self.train_ratio, val_ratio=self.val_ratio, test_ratio=self.test_ratio
+            file_path=self.data_config.file_path,
+            time_steps=self.data_config.time_steps,
+            train_ratio=self.data_config.train_ratio,
+            val_ratio=self.data_config.val_ratio,
+            test_ratio=self.data_config.test_ratio,
         )
         self.model: Optional[tf.keras.Model] = None # Will be built by ModelBuilder
         self.trainer: Optional[Trainer] = None       # Will be instantiated in run()
@@ -162,31 +129,29 @@ class TimeSeriesModel:
         Saves key hyperparameters and the training summary for this run to a JSON file.
         This method can be called multiple times; it will overwrite the file with the latest info.
         """
+        data_parameters_dict = asdict(self.data_config)
+        if hasattr(self, 'data_loader') and self.data_loader:
+            data_parameters_dict.update({
+                'time_steps': self.data_loader.time_steps,
+                'train_ratio': self.data_loader.train_ratio,
+                'val_ratio': self.data_loader.val_ratio,
+                'test_ratio': self.data_loader.test_ratio,
+            })
+
+        training_parameters_dict = asdict(self.training_config)
+        training_parameters_dict['epochs_configured'] = self.epochs
+
+        model_builder_parameters_dict = asdict(self.model_builder_config)
+
         hyperparams_to_save = {
             'run_info': {
                 'timestamp': self.run_dir.split('_')[-2], # Adjusted for _%f
                 'run_directory': self.run_dir,
                 'log_file': self.log_file_path,
             },
-            'data_parameters': {
-                'file_path': self.file_path,
-                'time_steps': self.data_loader.time_steps if hasattr(self, 'data_loader') and self.data_loader else self.time_steps,
-                'train_ratio': self.data_loader.train_ratio if hasattr(self, 'data_loader') and self.data_loader else self.train_ratio,
-                'val_ratio': self.data_loader.val_ratio if hasattr(self, 'data_loader') and self.data_loader else self.val_ratio,
-                'test_ratio': self.data_loader.test_ratio if hasattr(self, 'data_loader') and self.data_loader else self.test_ratio,
-            },
-            'training_parameters': {
-                'epochs_configured': self.epochs,
-                'batch_size': self.batch_size,
-                'early_stopping_patience': self.early_stopping_patience,
-                'reduce_lr_patience': self.reduce_lr_patience,
-                'reduce_lr_factor': self.reduce_lr_factor,
-                'min_lr': self.min_lr,
-            },
-            'model_architecture_parameters': {
-                'block_configs': self.block_configs, # For ModelBuilders that use this list
-                **self.model_builder_params      # For ModelBuilders that take individual params
-            }
+            'data_parameters': data_parameters_dict,
+            'training_parameters': training_parameters_dict,
+            'model_architecture_parameters': model_builder_parameters_dict,
         }
         
         # Add the training_summary dictionary if it has been populated (after training)
@@ -274,8 +239,21 @@ class TimeSeriesModel:
             model_builder = ModelBuilder(
                 time_steps=X_train.shape[1],
                 num_features=X_train.shape[2],
-                block_configs=self.block_configs, # Pass block_configs (may be empty or used by specific ModelBuilder)
-                **self.model_builder_params    # Pass all other model-specific params
+                block_configs=self.model_builder_config.block_configs,
+                num_heads=self.model_builder_config.num_heads,
+                key_dim=self.model_builder_config.key_dim,
+                leaky_relu_alpha_res_block_1=self.model_builder_config.leaky_relu_alpha_res_block_1,
+                leaky_relu_alpha_res_block_2=self.model_builder_config.leaky_relu_alpha_res_block_2,
+                leaky_relu_alpha_after_add=self.model_builder_config.leaky_relu_alpha_after_add,
+                conv_l2_reg=self.model_builder_config.conv_l2_reg,
+                lstm_units=self.model_builder_config.lstm_units,
+                recurrent_dropout_lstm=self.model_builder_config.recurrent_dropout_lstm,
+                lstm_l2_reg=self.model_builder_config.lstm_l2_reg,
+                moe_num_experts=self.model_builder_config.moe_num_experts,
+                moe_units=self.model_builder_config.moe_units,
+                moe_leaky_relu_alpha=self.model_builder_config.moe_leaky_relu_alpha,
+                optimizer_lr=self.model_builder_config.optimizer_lr,
+                optimizer_clipnorm=self.model_builder_config.optimizer_clipnorm,
             )
             self.model = model_builder.build_model()
             model_build_end_time = time.time()
