@@ -6,7 +6,7 @@ import importlib
 import logging
 import sys
 from pathlib import Path
-from typing import Iterable, List, Mapping, Optional
+from typing import Iterable, List, Mapping, Optional, Tuple
 
 import hydra
 import pandas as pd
@@ -20,6 +20,7 @@ from src.data.dataset import (
     DataConfig,
     TimezoneConfig,
     WalkForwardSettings,
+    WindowedData,
     create_dataloaders,
     prepare_datasets,
 )
@@ -27,7 +28,7 @@ from src.experiments.multirun import RunResult, run_multirun
 from src.models.forecasting import ModelConfig, TemporalForecastingModel
 from src.training.engine import TrainerConfig, train
 from src.utils.repro import (
-    get_deterministic_flags,
+    build_run_provenance,
     get_git_revision,
     get_hardware_snapshot,
     hash_config,
@@ -38,7 +39,19 @@ LOGGER = logging.getLogger(__name__)
 
 
 def _slugify(value: str) -> str:
-    return str(value).replace(" ", "_").replace("/", "_").lower()
+    text = str(value).lower()
+    result_chars: list[str] = []
+    previous_was_sep = False
+    for char in text:
+        if char.isalnum():
+            result_chars.append(char)
+            previous_was_sep = False
+        else:
+            if not previous_was_sep:
+                result_chars.append("_")
+                previous_was_sep = True
+    slug = "".join(result_chars).strip("_")
+    return slug or "default"
 
 
 def _build_data_config(cfg: DictConfig, root: Path) -> DataConfig:
@@ -73,6 +86,20 @@ def _build_data_config(cfg: DictConfig, root: Path) -> DataConfig:
         calendar=calendar_cfg,
         walkforward=walkforward_cfg,
     )
+
+
+def _serialise_dataset_metadata(metadata: Mapping[str, object]) -> dict[str, object]:
+    payload: dict[str, object] = {}
+    for key, value in metadata.items():
+        if isinstance(value, pd.DatetimeIndex):
+            payload[key] = [ts.isoformat() for ts in value]
+        elif isinstance(value, pd.Timedelta):
+            payload[key] = str(value)
+        elif isinstance(value, (list, tuple)):
+            payload[key] = list(value)
+        else:
+            payload[key] = value
+    return payload
 
 
 def _build_model_config(cfg: DictConfig, input_features: int, time_steps: int) -> ModelConfig:
@@ -182,30 +209,60 @@ def run_interpret_command(
     return metadata_path
 
 
-def _run_training_once(cfg: DictConfig, original_cwd: Path, metadata: dict[str, object]) -> RunResult:
+def _run_training_once(
+    cfg: DictConfig,
+    original_cwd: Path,
+    metadata: dict[str, object],
+    *,
+    dataset_key: Tuple[str, object, int] | None = None,
+    dataset: WindowedData | None = None,
+    data_cfg: DataConfig | None = None,
+) -> RunResult:
     seed = int(cfg.seed)
     seed_everything(seed)
-    metadata = dict(metadata)
-    metadata["deterministic_flags"] = get_deterministic_flags()
+    data_cfg_obj = data_cfg or _build_data_config(cfg.data, original_cwd)
+    LOGGER.info("Configured pairs: %s | horizons: %s", data_cfg_obj.pairs, data_cfg_obj.horizons)
 
-    data_cfg = _build_data_config(cfg.data, original_cwd)
-    LOGGER.info("Configured pairs: %s | horizons: %s", data_cfg.pairs, data_cfg.horizons)
-    datasets = prepare_datasets(data_cfg)
-    first_key, first_window = next(iter(datasets.items()))
-    LOGGER.info(
-        "Using window %s for initial training loop (total windows: %d)",
-        first_key,
-        len(datasets),
+    selected_key: Tuple[str, object, int]
+    selected_window: WindowedData
+    if dataset_key is not None and dataset is not None:
+        selected_key = dataset_key
+        selected_window = dataset
+    else:
+        datasets = prepare_datasets(data_cfg_obj)
+        selected_key, selected_window = next(iter(datasets.items()))
+        LOGGER.info(
+            "Using window %s for initial training loop (total windows: %d)",
+            selected_key,
+            len(datasets),
+        )
+
+    dataloaders = create_dataloaders(selected_window, data_cfg_obj)
+
+    run_metadata = build_run_provenance(
+        seed,
+        metadata,
+        dataset={
+            "key": {
+                "pair": selected_key[0],
+                "horizon": str(selected_key[1]),
+                "window_id": selected_key[2],
+            },
+            **_serialise_dataset_metadata(selected_window.metadata),
+        },
     )
-    dataloaders = create_dataloaders(first_window, data_cfg)
 
-    model_cfg = _build_model_config(cfg.model, len(data_cfg.feature_columns), data_cfg.time_steps)
+    model_cfg = _build_model_config(
+        cfg.model,
+        len(data_cfg_obj.feature_columns),
+        data_cfg_obj.time_steps,
+    )
     model = TemporalForecastingModel(model_cfg)
 
     trainer_cfg = _build_trainer_config(cfg.training)
-    summary = train(model, dataloaders, trainer_cfg, metadata=metadata)
+    summary = train(model, dataloaders, trainer_cfg, metadata=dict(run_metadata))
 
-    return RunResult(seed=seed, summary=summary, metadata=metadata)
+    return RunResult(seed=seed, summary=summary, metadata=dict(run_metadata))
 
 
 def _single_run(cfg: DictConfig) -> None:
@@ -230,11 +287,25 @@ def _single_run(cfg: DictConfig) -> None:
         )
 
 
-def _resolve_output_directory(cfg: DictConfig, original_cwd: Path) -> Path:
+def _resolve_output_directory(
+    cfg: DictConfig,
+    original_cwd: Path,
+    *,
+    dataset: Mapping[str, object] | None = None,
+) -> Path:
     model_name = _slugify(cfg.model.get("name", TemporalForecastingModel.__name__))
-    pair = _slugify(cfg.data.pairs[0]) if cfg.data.pairs else "all"
-    horizon = _slugify(cfg.data.horizons[0]) if cfg.data.horizons else "all"
-    return original_cwd / "artifacts" / "runs" / model_name / f"{pair}_{horizon}"
+    base = original_cwd / "artifacts" / "runs" / model_name
+    if dataset is None:
+        pair = _slugify(cfg.data.pairs[0]) if cfg.data.pairs else "all"
+        horizon = _slugify(cfg.data.horizons[0]) if cfg.data.horizons else "all"
+        return base / f"{pair}_{horizon}"
+
+    pair_slug = _slugify(dataset.get("pair", "all"))
+    horizon_steps = dataset.get("horizon_steps") or dataset.get("horizon") or "all"
+    horizon_slug = _slugify(horizon_steps)
+    window_id = dataset.get("window_id")
+    window_slug = f"window-{int(window_id):03d}" if window_id is not None else "window-000"
+    return base / pair_slug / horizon_slug / window_slug
 
 
 def _multirun_entry(cfg: DictConfig) -> None:
@@ -254,22 +325,52 @@ def _multirun_entry(cfg: DictConfig) -> None:
 
     base_metadata = _prepare_metadata(cfg)
 
-    output_dir = _resolve_output_directory(cfg, original_cwd)
+    data_cfg = _build_data_config(cfg.data, original_cwd)
+    datasets = prepare_datasets(data_cfg)
 
-    def _runner(seed: int) -> RunResult:
-        cfg_copy = OmegaConf.create(OmegaConf.to_container(cfg, resolve=True))
-        cfg_copy.seed = seed
-        return _run_training_once(cfg_copy, original_cwd, base_metadata)
+    for dataset_key, window in datasets.items():
+        dataset_metadata = dict(window.metadata)
+        dataset_metadata.setdefault("pair", dataset_key[0])
+        dataset_metadata.setdefault("horizon", dataset_key[1])
+        dataset_metadata.setdefault("window_id", dataset_key[2])
 
-    aggregated = run_multirun(seeds, output_dir, _runner, base_metadata=base_metadata)
-    for metric, stats in aggregated.items():
+        output_dir = _resolve_output_directory(cfg, original_cwd, dataset=dataset_metadata)
+
+        def _runner(seed: int, *, _dataset_key=dataset_key, _window=window) -> RunResult:
+            cfg_copy = OmegaConf.create(OmegaConf.to_container(cfg, resolve=True))
+            cfg_copy.seed = seed
+            return _run_training_once(
+                cfg_copy,
+                original_cwd,
+                base_metadata,
+                dataset_key=_dataset_key,
+                dataset=_window,
+                data_cfg=data_cfg,
+            )
+
         LOGGER.info(
-            "Aggregated %s - mean: %.4f | std: %.4f | ci95: %.4f",
-            metric,
-            stats["mean"],
-            stats["std"],
-            stats["ci95"],
+            "Launching multirun for pair=%s horizon=%s window=%s", *dataset_key
         )
+        dataset_base_metadata = dict(base_metadata)
+        dataset_base_metadata["dataset"] = {
+            "pair": dataset_key[0],
+            "horizon": str(dataset_key[1]),
+            "window_id": dataset_key[2],
+        }
+        aggregated = run_multirun(
+            seeds,
+            output_dir,
+            _runner,
+            base_metadata=dataset_base_metadata,
+        )
+        for metric, stats in aggregated.items():
+            LOGGER.info(
+                "Aggregated %s - mean: %.4f | std: %.4f | ci95: %.4f",  # type: ignore[index]
+                metric,
+                stats.get("mean", float("nan")),
+                stats.get("std", float("nan")),
+                stats.get("ci95", float("nan")),
+            )
 
 
 @hydra.main(version_base=None, config_path="../configs", config_name="default")

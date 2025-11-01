@@ -29,6 +29,11 @@ def test_multi_run_reproducibility(tmp_path: Path) -> None:
     assert metadata_path.exists()
     payload = json.loads(metadata_path.read_text())
     assert payload["aggregate"]["val_score"]["n"] == 5
+    assert "ci95_low" in payload["aggregate"]["val_score"]
+    assert len(payload["runs"]) == 5
+    for run in payload["runs"]:
+        assert "metrics" in run
+        assert "extra" in run
 
 
 def test_statistical_analysis_outputs(tmp_path: Path) -> None:

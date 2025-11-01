@@ -7,7 +7,7 @@ import os
 import platform
 import random
 import subprocess
-from typing import Any, Mapping
+from typing import Any, Mapping, MutableMapping
 
 import numpy as np
 import torch
@@ -33,14 +33,41 @@ def seed_everything(seed: int, deterministic: bool = True) -> None:
         torch.backends.cudnn.benchmark = True
 
 
-def get_deterministic_flags() -> dict[str, bool]:
-    """Return the current deterministic flags for cuDNN usage."""
+def snapshot_torch_determinism() -> dict[str, Any]:
+    """Capture the current torch/CUDA/cuDNN determinism settings."""
 
-    return {
+    snapshot: dict[str, Any] = {
         "deterministic_algorithms": torch.are_deterministic_algorithms_enabled(),
         "cudnn_deterministic": torch.backends.cudnn.deterministic,
         "cudnn_benchmark": torch.backends.cudnn.benchmark,
+        "cudnn_enabled": torch.backends.cudnn.enabled,
     }
+
+    if torch.cuda.is_available():
+        snapshot.update(
+            {
+                "cuda_available": True,
+                "cuda_device_count": torch.cuda.device_count(),
+                "cuda_seed_all": True,
+            }
+        )
+    else:
+        snapshot.update({"cuda_available": False, "cuda_device_count": 0})
+
+    cudnn_version = None
+    try:
+        cudnn_version = torch.backends.cudnn.version()
+    except AttributeError:  # pragma: no cover - defensive when cudnn is absent
+        cudnn_version = None
+    snapshot["cudnn_version"] = cudnn_version
+
+    return snapshot
+
+
+def get_deterministic_flags() -> dict[str, Any]:
+    """Backward compatible alias for determinism snapshots."""
+
+    return snapshot_torch_determinism()
 
 
 def hash_config(cfg: DictConfig | Mapping[str, Any]) -> str:
@@ -85,3 +112,45 @@ def get_hardware_snapshot() -> dict[str, Any]:
         snapshot["cuda_devices"] = []
 
     return snapshot
+
+
+def build_run_provenance(
+    seed: int,
+    base_metadata: Mapping[str, Any] | None = None,
+    *,
+    dataset: Mapping[str, Any] | None = None,
+    extra: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Construct a provenance blob describing a seeded training run."""
+
+    payload: MutableMapping[str, Any] = dict(base_metadata or {})
+    payload["seed"] = seed
+    payload.setdefault("git_sha", get_git_revision())
+    payload.setdefault("hardware", get_hardware_snapshot())
+    payload["deterministic_flags"] = snapshot_torch_determinism()
+
+    torch_snapshot = {
+        "version": torch.__version__,
+        "cuda_version": torch.version.cuda,
+        "mps_available": getattr(torch.backends, "mps", None) is not None
+        and getattr(torch.backends.mps, "is_available", lambda: False)(),
+    }
+    try:
+        torch_snapshot["git_version"] = torch.version.git_version
+    except AttributeError:  # pragma: no cover - depends on torch build details
+        torch_snapshot["git_version"] = None
+    try:
+        torch_snapshot["cudnn_enabled"] = torch.backends.cudnn.enabled
+        torch_snapshot["cudnn_version"] = torch.backends.cudnn.version()
+    except AttributeError:  # pragma: no cover - defensive when cudnn is absent
+        torch_snapshot["cudnn_enabled"] = None
+        torch_snapshot["cudnn_version"] = None
+
+    payload["torch"] = torch_snapshot
+
+    if dataset is not None:
+        payload["dataset"] = dict(dataset)
+    if extra is not None:
+        payload.update(dict(extra))
+
+    return dict(payload)

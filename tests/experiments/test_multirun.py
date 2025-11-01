@@ -62,6 +62,9 @@ def test_run_multirun_writes_expected_layout(tmp_path: Path) -> None:
         assert metadata["seed"] == seed
         assert metadata["device"] == "cpu"
         assert metadata["config_hash"] == "hash"
+        assert "deterministic_flags" in metadata
+        assert metadata.get("git_sha") == "abcdef"
+        assert "hardware" in metadata
 
     summary_path = tmp_path / "summary.csv"
     assert summary_path.exists()
@@ -71,11 +74,17 @@ def test_run_multirun_writes_expected_layout(tmp_path: Path) -> None:
     assert abs(float(best_metrics["mean"]) - 0.7) < 1e-6
     assert float(best_metrics["std"]) > 0.0
     assert float(best_metrics["ci95"]) > 0.0
+    assert float(best_metrics["n"]) == len(seeds)
 
     metadata_blob = json.loads((tmp_path / "metadata.json").read_text())
     assert metadata_blob["seeds"] == seeds
     assert metadata_blob["metrics"]["final_val_mae"]["mean"] == aggregated["final_val_mae"]["mean"]
-    assert metadata_blob["deterministic_flags"] == {"deterministic_algorithms": True}
+    assert metadata_blob["deterministic_flags"]["deterministic_algorithms"] is True
+    assert len(metadata_blob["run_records"]) == len(seeds)
+    for record in metadata_blob["run_records"]:
+        assert "metrics" in record
+        assert "metadata" in record
+        assert record["metadata"].get("git_sha") == "abcdef"
 
 
 def test_run_multirun_aggregation_math(tmp_path: Path) -> None:
@@ -105,5 +114,6 @@ def test_run_multirun_aggregation_math(tmp_path: Path) -> None:
     ) ** 0.5
     assert abs(aggregated["best_val_loss"]["std"] - expected_std) < 1e-6
 
-    ci_radius = 1.96 * expected_std / len(seeds) ** 0.5
+    # Student-t critical value for df=1 is ~12.706
+    ci_radius = 12.706 * expected_std / len(seeds) ** 0.5
     assert abs(aggregated["best_val_loss"]["ci95"] - ci_radius) < 1e-6
