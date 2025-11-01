@@ -1,18 +1,30 @@
-.PHONY: format lint train-smoke repro publish
+PYTHON ?= python
+CHECK_PATHS = src scripts tests
+
+.PHONY: format lint typecheck test train-smoke benchmark repro publish
 
 format:
-	conda run -n ieee-fx black --check src
+	$(PYTHON) -m black --check $(CHECK_PATHS)
 
 lint:
-	conda run -n ieee-fx ruff check src
+	$(PYTHON) -m ruff check $(CHECK_PATHS)
+
+typecheck:
+	$(PYTHON) -m mypy $(CHECK_PATHS)
+
+test:
+	$(PYTHON) -m pytest
 
 train-smoke:
-	conda run -n ieee-fx python -m src.cli training.epochs=1 data.time_steps=16
+	$(PYTHON) -m src.cli training.epochs=1 training.device=cpu data.time_steps=16 data.batch_size=32
 
-repro: format lint train-smoke
+benchmark:
+	$(PYTHON) scripts/benchmark.py --train-warmup 1 --inference-warmup 2 --inference-runs 5
+
+repro: format lint typecheck test train-smoke
 
 publish:
 	mkdir -p artifacts/publish
-	conda run -n ieee-fx python scripts/export_tables.py --metrics artifacts/examples/metrics.csv --output-dir artifacts/publish
-	conda run -n ieee-fx python scripts/export_figures.py --metrics artifacts/examples/metrics.csv --output-dir artifacts/publish/figures
+	$(PYTHON) scripts/export_tables.py --metrics artifacts/examples/metrics.csv --output-dir artifacts/publish
+	$(PYTHON) scripts/export_figures.py --metrics artifacts/examples/metrics.csv --output-dir artifacts/publish/figures
 	tar -czf artifacts/publish.tar.gz -C artifacts/publish .

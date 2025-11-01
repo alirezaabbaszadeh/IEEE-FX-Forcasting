@@ -1,4 +1,5 @@
 """PyTorch forecasting models derived from the stable TensorFlow prototype in `v_10`."""
+
 from __future__ import annotations
 
 import math
@@ -32,14 +33,17 @@ if nn is not None:  # pragma: no branch - executed when torch is available
     class _HookHandle:
         """Lightweight handle mirroring the interface of PyTorch hooks."""
 
-        def __init__(self, hooks: List[Callable[[torch.Tensor, Mapping[str, object]], None]], hook: Callable[[torch.Tensor, Mapping[str, object]], None]) -> None:
+        def __init__(
+            self,
+            hooks: List[Callable[[torch.Tensor, Mapping[str, object]], None]],
+            hook: Callable[[torch.Tensor, Mapping[str, object]], None],
+        ) -> None:
             self._hooks = hooks
             self._hook = hook
 
         def remove(self) -> None:
             if self._hook in self._hooks:
                 self._hooks.remove(self._hook)
-
 
     class AttentionHookMixin:
         """Mixin that enables external consumers to register attention hooks."""
@@ -53,10 +57,11 @@ if nn is not None:  # pragma: no branch - executed when torch is available
             self._attention_hooks.append(hook)
             return _HookHandle(self._attention_hooks, hook)
 
-        def _dispatch_attention_hooks(self, weights: torch.Tensor, context: Mapping[str, object]) -> None:
+        def _dispatch_attention_hooks(
+            self, weights: torch.Tensor, context: Mapping[str, object]
+        ) -> None:
             for hook in list(self._attention_hooks):
                 hook(weights, context)
-
 
     class HeadActivationLogger:
         """Approximates expert statistics by treating attention heads as experts."""
@@ -114,7 +119,9 @@ if nn is not None:  # pragma: no branch - executed when torch is available
     class ResidualTemporalBlock(AttentionHookMixin, nn.Module):
         """A lightweight residual block mixing convolutions and self-attention."""
 
-        def __init__(self, hidden_size: int, kernel_size: int, attention_heads: int, dropout: float) -> None:
+        def __init__(
+            self, hidden_size: int, kernel_size: int, attention_heads: int, dropout: float
+        ) -> None:
             AttentionHookMixin.__init__(self)
             nn.Module.__init__(self)
             padding = kernel_size // 2
@@ -139,7 +146,13 @@ if nn is not None:  # pragma: no branch - executed when torch is available
             conv_out = conv_out.transpose(1, 2)
 
             attn_input = conv_out.transpose(0, 1)  # (time, batch, hidden)
-            attn_out, attn_weights = self.attention(attn_input, attn_input, attn_input)
+            attn_out, attn_weights = self.attention(
+                attn_input,
+                attn_input,
+                attn_input,
+                need_weights=True,
+                average_attn_weights=False,
+            )
             self._dispatch_attention_hooks(attn_weights, {"stage": "self_attention"})
             self.head_logger.log(attn_weights.detach())
             attn_out = attn_out.transpose(0, 1)
@@ -153,7 +166,6 @@ if nn is not None:  # pragma: no branch - executed when torch is available
 
         def expert_summary(self) -> Dict[str, Sequence[float]]:
             return self.head_logger.summary()
-
 
     class TemporalForecastingModel(nn.Module):
         """End-to-end forecasting network inspired by the `v_10` TensorFlow architecture."""
@@ -199,7 +211,13 @@ if nn is not None:  # pragma: no branch - executed when torch is available
             handles: List[_HookHandle] = []
             for idx, block in enumerate(self.blocks):
                 if isinstance(block, AttentionHookMixin):
-                    def wrapped(weights: torch.Tensor, context: Mapping[str, object], *, layer_index: int = idx) -> None:
+
+                    def wrapped(
+                        weights: torch.Tensor,
+                        context: Mapping[str, object],
+                        *,
+                        layer_index: int = idx,
+                    ) -> None:
                         hook(weights, {**context, "layer_index": layer_index})
 
                     handles.append(block.register_attention_hook(wrapped))
@@ -239,7 +257,6 @@ if nn is not None:  # pragma: no branch - executed when torch is available
             pooled = self.dropout(pooled)
             return self.head(pooled)
 
-
 else:  # pragma: no cover - executed when torch is unavailable
 
     class TemporalForecastingModel:  # type: ignore[override]
@@ -247,7 +264,6 @@ else:  # pragma: no cover - executed when torch is unavailable
 
         def __init__(self, cfg: ModelConfig) -> None:  # pragma: no cover - simple guard
             raise ImportError("PyTorch is required to instantiate TemporalForecastingModel")
-
 
     class ResidualTemporalBlock:  # type: ignore[override]
         def __init__(self, *args: object, **kwargs: object) -> None:  # pragma: no cover

@@ -1,4 +1,5 @@
 """Walk-forward dataset construction utilities."""
+
 from __future__ import annotations
 
 import logging
@@ -7,6 +8,7 @@ from typing import Dict
 
 import numpy as np
 import pandas as pd
+import pytz
 from sklearn.preprocessing import StandardScaler
 
 from src.data.dataset import DataConfig, SequenceDataset, WindowedData
@@ -51,7 +53,9 @@ class WalkForwardSplitter:
 
             for raw_horizon in self.cfg.horizons:
                 horizon_td, horizon_steps = self._resolve_horizon(raw_horizon, freq_td)
-                windowed = self._build_pair_windows(pair, pair_frame, windows, horizon_td, horizon_steps)
+                windowed = self._build_pair_windows(
+                    pair, pair_frame, windows, horizon_td, horizon_steps
+                )
                 for window_id, data in windowed.items():
                     outputs[(pair, horizon_td, window_id)] = data
 
@@ -63,20 +67,31 @@ class WalkForwardSplitter:
     # Helper utilities
     # ------------------------------------------------------------------
     def _normalise_dataframe(self, df: pd.DataFrame) -> pd.DataFrame:
-        timestamps = pd.to_datetime(df[self.cfg.timestamp_column], errors="coerce")
+        raw_timestamps = df[self.cfg.timestamp_column]
+        timestamps = pd.to_datetime(raw_timestamps, errors="coerce")
         if timestamps.isnull().any():
             raise ValueError("Timestamp column contains non-parsable values")
 
-        if timestamps.dt.tz is None:
+        source_tz = pytz.timezone(self.cfg.timezone.source)
+        target_tz = pytz.timezone(self.cfg.timezone.normalise_to)
+
+        if timestamps.dtype == "object":
+            timestamps = pd.to_datetime(raw_timestamps, errors="coerce", utc=True)
+            if timestamps.isnull().any():
+                raise ValueError("Timestamp column contains non-parsable values")
+            timestamps = timestamps.dt.tz_convert(source_tz)
+        elif timestamps.dt.tz is None:
             timestamps = timestamps.dt.tz_localize(
-                self.cfg.timezone.source,
+                source_tz,
                 ambiguous="infer",
                 nonexistent="shift_forward",
             )
         else:
-            timestamps = timestamps.dt.tz_convert(self.cfg.timezone.source)
+            timestamps = timestamps.dt.tz_convert(source_tz)
 
-        timestamps = timestamps.dt.tz_convert(self.cfg.timezone.normalise_to)
+        timestamps = timestamps.dt.tz_convert(target_tz)
+        timestamps = timestamps.dt.tz_localize(None)
+        timestamps = timestamps.dt.tz_localize(target_tz)
 
         frame = df.copy()
         frame[self.cfg.timestamp_column] = timestamps
@@ -86,6 +101,8 @@ class WalkForwardSplitter:
     def _infer_frequency(self, index: pd.DatetimeIndex) -> pd.Timedelta:
         freq = pd.infer_freq(index)
         if freq is not None:
+            if isinstance(freq, str) and not any(ch.isdigit() for ch in freq):
+                freq = f"1{freq}"
             return pd.to_timedelta(freq)
 
         diffs = index.to_series().diff().dropna()
@@ -142,9 +159,15 @@ class WalkForwardSplitter:
             feature_scaler = StandardScaler().fit(train_df.loc[:, feature_columns])
             target_scaler = StandardScaler().fit(train_df[[target_column]])
 
-            train_dataset = self._build_partition_dataset(train_df, feature_scaler, target_scaler, horizon_steps)
-            val_dataset = self._build_partition_dataset(val_df, feature_scaler, target_scaler, horizon_steps)
-            test_dataset = self._build_partition_dataset(test_df, feature_scaler, target_scaler, horizon_steps)
+            train_dataset = self._build_partition_dataset(
+                train_df, feature_scaler, target_scaler, horizon_steps
+            )
+            val_dataset = self._build_partition_dataset(
+                val_df, feature_scaler, target_scaler, horizon_steps
+            )
+            test_dataset = self._build_partition_dataset(
+                test_df, feature_scaler, target_scaler, horizon_steps
+            )
 
             metadata = {
                 "pair": pair,
