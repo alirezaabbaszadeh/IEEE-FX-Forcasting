@@ -1,0 +1,14 @@
+cff-version: 1.2.0
+title: "IEEE FX Forecasting"
+authors:
+  - family-names: "IEEE FX Forecasting Team"
+    name-particle: ""
+    given-names: ""
+abstract: |
+  Reference implementation of a mix-of-experts foreign exchange forecasting benchmark
+  including interpretability diagnostics and automated reporting pipelines.
+version: "0.1.0"
+doi: "10.5281/zenodo.0000000"
+repository-code: "https://github.com/example/IEEE-FX-Forecasting"
+license: MIT
+message: "If you build upon this work, please cite this project using the metadata above."
