@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import asdict
-from typing import Dict
+from typing import Dict, Iterable
 
 import numpy as np
 import pandas as pd
@@ -50,11 +50,17 @@ class WalkForwardSplitter:
 
             freq_td = self._infer_frequency(pair_frame.index)
             windows = self.scheduler.generate(pair_frame.index)
+            diagnostics = self._diagnose_windows(pair, pair_frame.index, windows)
 
             for raw_horizon in self.cfg.horizons:
                 horizon_td, horizon_steps = self._resolve_horizon(raw_horizon, freq_td)
                 windowed = self._build_pair_windows(
-                    pair, pair_frame, windows, horizon_td, horizon_steps
+                    pair,
+                    pair_frame,
+                    windows,
+                    horizon_td,
+                    horizon_steps,
+                    diagnostics,
                 )
                 for window_id, data in windowed.items():
                     outputs[(pair, horizon_td, window_id)] = data
@@ -142,6 +148,7 @@ class WalkForwardSplitter:
         windows: list,
         horizon_td: pd.Timedelta,
         horizon_steps: int,
+        diagnostics: Dict[int, dict[str, object]],
     ) -> Dict[int, WindowedData]:
         feature_columns = list(self.cfg.feature_columns)
         target_column = self.cfg.target_column
@@ -169,6 +176,8 @@ class WalkForwardSplitter:
                 test_df, feature_scaler, target_scaler, horizon_steps
             )
 
+            window_diag = diagnostics.get(window_id, {})
+
             metadata = {
                 "pair": pair,
                 "horizon": horizon_td,
@@ -180,6 +189,12 @@ class WalkForwardSplitter:
                 "train_index": train_df.index.copy(),
                 "val_index": val_df.index.copy(),
                 "test_index": test_df.index.copy(),
+                "train_range": window_diag.get("train_range"),
+                "val_range": window_diag.get("val_range"),
+                "test_range": window_diag.get("test_range"),
+                "embargo_gap_train_val": window_diag.get("embargo_gap_train_val"),
+                "embargo_gap_val_test": window_diag.get("embargo_gap_val_test"),
+                "overlaps_previous_window": window_diag.get("overlaps_previous_window", False),
             }
 
             outputs[window_id] = WindowedData(
@@ -192,6 +207,76 @@ class WalkForwardSplitter:
             )
 
         return outputs
+
+    def _diagnose_windows(
+        self,
+        pair: str,
+        index: Iterable[pd.Timestamp],
+        windows: list,
+    ) -> Dict[int, dict[str, object]]:
+        diagnostics: Dict[int, dict[str, object]] = {}
+        timestamp_index = pd.DatetimeIndex(index)
+        previous_test_end: pd.Timestamp | None = None
+
+        def _range_payload(idx: pd.DatetimeIndex) -> dict[str, str] | None:
+            if idx.empty:
+                return None
+            return {"start": idx[0].isoformat(), "end": idx[-1].isoformat()}
+
+        def _gap(start_idx: pd.DatetimeIndex, end_idx: pd.DatetimeIndex) -> pd.Timedelta | None:
+            if start_idx.empty or end_idx.empty:
+                return None
+            return start_idx[0] - end_idx[-1]
+
+        for window_id, window in enumerate(windows):
+            resolved = window.resolve(timestamp_index)
+            train_idx = resolved["train"]
+            val_idx = resolved["val"]
+            test_idx = resolved["test"]
+
+            gap_train_val = _gap(val_idx, train_idx)
+            gap_val_test = _gap(test_idx, val_idx)
+
+            overlaps_previous = False
+            if previous_test_end is not None and not train_idx.empty:
+                if train_idx[0] <= previous_test_end:
+                    overlaps_previous = True
+                    LOGGER.warning(
+                        "Walk-forward window overlap detected for %s window %d: %s <= %s",
+                        pair,
+                        window_id,
+                        train_idx[0],
+                        previous_test_end,
+                    )
+
+            diagnostics[window_id] = {
+                "train_range": _range_payload(train_idx),
+                "val_range": _range_payload(val_idx),
+                "test_range": _range_payload(test_idx),
+                "embargo_gap_train_val": gap_train_val,
+                "embargo_gap_val_test": gap_val_test,
+                "overlaps_previous_window": overlaps_previous,
+            }
+
+            LOGGER.debug(
+                "Walk-forward diagnostics for %s window %d - train %s, val %s, test %s, gaps %s/%s",
+                pair,
+                window_id,
+                diagnostics[window_id]["train_range"],
+                diagnostics[window_id]["val_range"],
+                diagnostics[window_id]["test_range"],
+                gap_train_val,
+                gap_val_test,
+            )
+
+            if not test_idx.empty:
+                previous_test_end = test_idx[-1]
+            elif not val_idx.empty:
+                previous_test_end = val_idx[-1]
+            elif not train_idx.empty:
+                previous_test_end = train_idx[-1]
+
+        return diagnostics
 
     def _build_partition_dataset(
         self,

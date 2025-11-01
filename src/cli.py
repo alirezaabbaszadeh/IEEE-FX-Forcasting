@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import json
 import logging
 import sys
 from pathlib import Path
@@ -26,7 +27,7 @@ from src.data.dataset import (
 )
 from src.experiments.multirun import RunResult, run_multirun
 from src.models.forecasting import ModelConfig, TemporalForecastingModel
-from src.training.engine import TrainerConfig, train
+from src.training.engine import TrainerConfig, TrainingSummary, train
 from src.utils.repro import (
     build_run_provenance,
     get_git_revision,
@@ -131,6 +132,16 @@ def _prepare_metadata(cfg: DictConfig) -> dict[str, object]:
         "config_hash": hash_config(cfg),
         "git_sha": get_git_revision(),
         "hardware": get_hardware_snapshot(),
+    }
+
+
+def _summarise_training(summary: TrainingSummary) -> dict[str, float]:
+    epochs = list(summary.epochs)
+    final_epoch = epochs[-1] if epochs else None
+    return {
+        "best_val_loss": summary.best_val_loss,
+        "final_val_loss": final_epoch.val_loss if final_epoch else float("nan"),
+        "final_val_mae": final_epoch.val_mae if final_epoch else float("nan"),
     }
 
 
@@ -274,17 +285,42 @@ def _single_run(cfg: DictConfig) -> None:
     LOGGER.info("Loaded configuration:\n%s", OmegaConf.to_yaml(cfg))
 
     metadata = _prepare_metadata(cfg)
-    result = _run_training_once(cfg, original_cwd, metadata)
+    data_cfg = _build_data_config(cfg.data, original_cwd)
+    datasets = prepare_datasets(data_cfg)
 
-    LOGGER.info("Best validation loss: %.4f", result.summary.best_val_loss)
-    for epoch_idx, metrics in enumerate(result.summary.epochs, start=1):
+    for dataset_key, window in datasets.items():
+        dataset_metadata = dict(window.metadata)
+        dataset_metadata.setdefault("pair", dataset_key[0])
+        dataset_metadata.setdefault("horizon", dataset_key[1])
+        dataset_metadata.setdefault("window_id", dataset_key[2])
+
         LOGGER.info(
-            "Epoch %d metrics - train_loss: %.4f, val_loss: %.4f, val_mae: %.4f",
-            epoch_idx,
-            metrics.train_loss,
-            metrics.val_loss,
-            metrics.val_mae,
+            "Starting training for pair=%s horizon=%s window=%s",
+            dataset_key[0],
+            dataset_key[1],
+            dataset_key[2],
         )
+
+        output_dir = _resolve_output_directory(cfg, original_cwd, dataset=dataset_metadata)
+        result = _run_training_once(
+            cfg,
+            original_cwd,
+            metadata,
+            dataset_key=dataset_key,
+            dataset=window,
+            data_cfg=data_cfg,
+        )
+        _write_single_run_artifacts(output_dir, result)
+
+        LOGGER.info("Best validation loss: %.4f", result.summary.best_val_loss)
+        for epoch_idx, metrics in enumerate(result.summary.epochs, start=1):
+            LOGGER.info(
+                "Epoch %d metrics - train_loss: %.4f, val_loss: %.4f, val_mae: %.4f",
+                epoch_idx,
+                metrics.train_loss,
+                metrics.val_loss,
+                metrics.val_mae,
+            )
 
 
 def _resolve_output_directory(
@@ -298,14 +334,32 @@ def _resolve_output_directory(
     if dataset is None:
         pair = _slugify(cfg.data.pairs[0]) if cfg.data.pairs else "all"
         horizon = _slugify(cfg.data.horizons[0]) if cfg.data.horizons else "all"
-        return base / f"{pair}_{horizon}"
+        combined = f"{pair}_{horizon}"
+        return base / combined / "window-000"
 
     pair_slug = _slugify(dataset.get("pair", "all"))
-    horizon_steps = dataset.get("horizon_steps") or dataset.get("horizon") or "all"
-    horizon_slug = _slugify(horizon_steps)
+    horizon_value = dataset.get("horizon_steps") or dataset.get("horizon") or "all"
+    horizon_slug = _slugify(str(horizon_value))
+    combined = f"{pair_slug}_{horizon_slug}"
     window_id = dataset.get("window_id")
     window_slug = f"window-{int(window_id):03d}" if window_id is not None else "window-000"
-    return base / pair_slug / horizon_slug / window_slug
+    return base / combined / window_slug
+
+
+def _write_single_run_artifacts(output_dir: Path, result: RunResult) -> None:
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    metrics = _summarise_training(result.summary)
+    with (output_dir / "metrics.json").open("w", encoding="utf-8") as handle:
+        json.dump(metrics, handle, indent=2, sort_keys=True)
+
+    metadata = dict(result.metadata)
+    metadata["seed"] = result.seed
+    metadata.setdefault("device", result.summary.device)
+    with (output_dir / "metadata.json").open("w", encoding="utf-8") as handle:
+        json.dump(metadata, handle, indent=2, sort_keys=True)
+
+    LOGGER.info("Persisted training artifacts to %s", output_dir)
 
 
 def _multirun_entry(cfg: DictConfig) -> None:
