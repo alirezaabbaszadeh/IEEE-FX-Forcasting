@@ -9,12 +9,18 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Mapping, MutableMapping, Optional, Sequence
 
 import numpy as np
-import torch
+
+try:  # pragma: no cover - optional dependency
+    import torch
+except ModuleNotFoundError:  # pragma: no cover - fallback for environments without torch
+    torch = None  # type: ignore[assignment]
 
 
 def _set_random_seeds(seed: int) -> None:
     random.seed(seed)
     np.random.seed(seed)
+    if torch is None:
+        return
     torch.manual_seed(seed)
     if torch.cuda.is_available():  # pragma: no cover - depends on CI environment
         torch.cuda.manual_seed_all(seed)
