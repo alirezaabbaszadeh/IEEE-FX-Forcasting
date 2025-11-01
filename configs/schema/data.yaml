@@ -1,0 +1,25 @@
+# @package data
+
+pairs: ???
+horizons: ???
+csv_path: ???
+feature_columns: ???
+target_column: ???
+timestamp_column: timestamp
+pair_column: pair
+time_steps: 32
+batch_size: 64
+num_workers: 0
+shuffle_train: true
+timezone:
+  source: UTC
+  normalise_to: UTC
+calendar:
+  primary: null
+  fallback: null
+walkforward:
+  train: ???
+  val: ???
+  test: ???
+  step: null
+  embargo: 0
