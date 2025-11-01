@@ -1,0 +1,19 @@
+name: ieee-fx
+channels:
+  - pytorch
+  - defaults
+dependencies:
+  - python=3.10
+  - pip=23.2.1
+  - pytorch=2.1.0
+  - torchvision=0.16.0
+  - torchaudio=2.1.0
+  - cpuonly
+  - numpy=1.24.4
+  - pandas=2.1.1
+  - scikit-learn=1.3.1
+  - pip:
+      - hydra-core==1.3.2
+      - omegaconf==2.3.0
+      - black==23.9.1
+      - ruff==0.1.5
