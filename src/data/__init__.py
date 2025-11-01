@@ -9,3 +9,11 @@ __all__ = [
     "create_dataloaders",
     "prepare_datasets",
 ]
+
+from .loader import FXDataLoader, FXDataLoaderConfig, FXHorizonDataset
+
+__all__ += [
+    "FXDataLoader",
+    "FXDataLoaderConfig",
+    "FXHorizonDataset",
+]
