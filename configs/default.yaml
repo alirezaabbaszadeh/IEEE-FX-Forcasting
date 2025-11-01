@@ -32,3 +32,6 @@ training:
   grad_clip: null
   log_interval: 10
   device: auto
+
+multirun:
+  seeds: [42, 1337]
