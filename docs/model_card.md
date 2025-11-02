@@ -32,9 +32,18 @@ It is **not** intended for high-frequency trading or production deployment witho
 1. Create the Conda environment: `conda env create -f environment.yml`
 2. Activate it: `conda activate ieee-fx`
 3. Run a smoke training job: `python -m src.cli training.epochs=1 training.device=cpu`
-4. Publish analysis artefacts: `make publish`
+4. Regenerate publication assets from stored metrics: `python scripts/reproduce_all.py`
 
-These steps regenerate tables, figures, and packaged archives under `artifacts/`.
+Hydra training runs are materialised under `artifacts/runs/<model>/<config_hash>/<pair>_<horizon>/window-*/`. Each
+window directory includes:
+
+- `metrics.json` summarising the final training/validation losses.
+- `metadata.json` capturing the resolved config hash, dataset checksums, environment lockfile digests, and an artefact index.
+- Optional `benchmarks/` outputs containing CSV/JSON latency measurements.
+
+Resolved configs are deduplicated beneath `artifacts/configs/<hash>.yaml`, allowing the reproduction script to reuse the
+exact Hydra payload. The manifest emitted by `scripts/reproduce_all.py` records the metrics sources, regenerated tables,
+vector figures, and referenced config snapshots to support full provenance when publishing results.
 
 ## Ethical Considerations & Risks
 - Synthetic fixtures lack real-world risk factors; deploying on live data requires rigorous compliance checks.

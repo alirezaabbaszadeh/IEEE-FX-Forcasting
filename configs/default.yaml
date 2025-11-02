@@ -1,5 +1,10 @@
 defaults:
   - schema/data
+  - schema/logging
+  - schema/model
+  - schema/training
+  - schema/interpret
+  - schema/multirun
 
 seed: 42
 

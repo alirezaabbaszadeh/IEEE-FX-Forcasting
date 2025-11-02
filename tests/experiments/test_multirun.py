@@ -65,6 +65,8 @@ def test_run_multirun_writes_expected_layout(tmp_path: Path) -> None:
         assert "deterministic_flags" in metadata
         assert metadata.get("git_sha") == "abcdef"
         assert "hardware" in metadata
+        assert metadata["artifacts"]["metrics"] == "metrics.json"
+        assert metadata["artifacts"]["metadata"] == "metadata.json"
 
     summary_path = tmp_path / "summary.csv"
     assert summary_path.exists()
@@ -85,6 +87,8 @@ def test_run_multirun_writes_expected_layout(tmp_path: Path) -> None:
         assert "metrics" in record
         assert "metadata" in record
         assert record["metadata"].get("git_sha") == "abcdef"
+    assert metadata_blob["artifacts"]["summary"] == "summary.csv"
+    assert set(metadata_blob["artifacts"]["runs"]) == {f"seed-{seed}" for seed in seeds}
 
 
 def test_run_multirun_aggregation_math(tmp_path: Path) -> None:

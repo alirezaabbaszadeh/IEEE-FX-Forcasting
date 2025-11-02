@@ -9,6 +9,7 @@ from omegaconf import OmegaConf
 
 from src.cli import _build_data_config, _single_run
 from src.data.dataset import prepare_datasets
+from src.utils.repro import hash_config
 
 
 def _synthetic_frame(rows: int) -> pd.DataFrame:
@@ -59,7 +60,8 @@ def test_single_run_materialises_all_windows(tmp_path: Path, monkeypatch: pytest
     _single_run(cfg)
 
     model_slug = "tinynet"
-    base_dir = tmp_path / "artifacts" / "runs" / model_slug / "eurusd_1"
+    config_hash = hash_config(cfg)
+    base_dir = tmp_path / "artifacts" / "runs" / model_slug / config_hash / "eurusd_1"
     assert base_dir.exists()
 
     for window_id in expected_window_ids:
@@ -75,10 +77,18 @@ def test_single_run_materialises_all_windows(tmp_path: Path, monkeypatch: pytest
         assert set(metrics).issuperset({"best_val_loss", "final_val_loss", "final_val_mae"})
 
         metadata = json.loads(metadata_path.read_text())
+        assert metadata["config"]["hash"] == config_hash
+        assert metadata["config_hash"] == config_hash
+        assert metadata["seed"] == cfg.seed
+
+        artifacts = metadata["artifacts"]
+        assert artifacts["metrics"] == "metrics.json"
+        assert artifacts["metadata"] == "metadata.json"
+
         dataset_meta = metadata["dataset"]
-        assert "train_index" in dataset_meta
-        assert "val_index" in dataset_meta
-        assert "test_index" in dataset_meta
+        for split in ("train_index", "val_index", "test_index"):
+            assert split in dataset_meta
+            assert split in dataset_meta["checksums"]
         assert dataset_meta["embargo"] == cfg.data.walkforward.embargo
         assert "calendar" in dataset_meta
         assert "embargo_gap_train_val" in dataset_meta
