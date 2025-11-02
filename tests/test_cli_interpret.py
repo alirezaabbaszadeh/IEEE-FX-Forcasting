@@ -71,13 +71,13 @@ def test_run_interpret_command_generates_assets(tmp_path, monkeypatch):
         {
             "event_id": "event_a",
             "inputs": torch.randn(2, 4, 3),
-            "metadata": {"pair": "EURUSD"},
+            "metadata": {"pair": "EURUSD", "horizon": "1h", "success": True},
             "feature_names": ["f1", "f2", "f3"],
         },
         {
             "event_id": "event_b",
             "inputs": torch.randn(1, 4, 3),
-            "metadata": {"pair": "GBPUSD"},
+            "metadata": {"pair": "EURUSD", "horizon": "1h", "success": False},
             "feature_names": ["f1", "f2", "f3"],
         },
     ]
@@ -94,21 +94,68 @@ def test_run_interpret_command_generates_assets(tmp_path, monkeypatch):
     )
 
     assert metadata_path.exists()
+    expected_root = output_dir / "eurusd" / "1h" / "seed-42"
+    assert metadata_path.parent == expected_root
     metadata = pd.read_csv(metadata_path)
     assert set(["event_a", "event_b"]).issubset(set(metadata["event_id"]))
     assert (metadata["event_count"] == 2).all()
     assert (metadata["seed"] == 42).all()
+    assert (metadata["pair"] == "EURUSD").all()
+    assert (metadata["horizon"] == "1h").all()
+    expected_columns = {
+        "event_index",
+        "event_id",
+        "attention_count",
+        "attention_dir",
+        "expert_trace_csv",
+        "expert_trace_figure",
+        "attribution_csv",
+        "attribution_figure",
+        "gating_entropy_csv",
+        "annotation_csv",
+        "annotation_json",
+        "success",
+        "meta_pair",
+        "meta_horizon",
+        "meta_success",
+        "event_count",
+        "seed",
+        "model_module",
+        "model_factory",
+        "pair",
+        "horizon",
+    }
+    assert expected_columns <= set(metadata.columns)
 
+    base_dir = metadata_path.parent
     for event in ["event_a", "event_b"]:
-        event_dir = output_dir / event
+        event_dir = base_dir / event
         attention_files = sorted((event_dir / "attention").glob("*.svg"))
         assert attention_files, "Expected attention heatmaps"
         expert_csv = event_dir / "experts" / "utilization.csv"
         assert expert_csv.exists()
         expert_table = pd.read_csv(expert_csv)
-        assert {"layer", "expert", "mean_activation", "top_frequency"} <= set(expert_table.columns)
+        assert {
+            "layer",
+            "expert",
+            "mean_activation",
+            "top_frequency",
+            "mean_entropy",
+        } <= set(expert_table.columns)
+        gating_path = event_dir / "experts" / "gating_entropy_correlations.csv"
+        assert gating_path.exists()
+        gating_table = pd.read_csv(gating_path)
+        assert {"layer", "entropy_activation_corr", "entropy_top_frequency_corr"} <= set(
+            gating_table.columns
+        )
         attrib_csv = event_dir / "attributions" / "attributions.csv"
         assert attrib_csv.exists()
         attrib_table = pd.read_csv(attrib_csv)
         assert not attrib_table.empty
         assert {"sample", "feature"} <= set(attrib_table.columns)
+        annotation_csv = event_dir / "annotations.csv"
+        annotation_json = event_dir / "annotations.json"
+        assert annotation_csv.exists()
+        assert annotation_json.exists()
+        annotation_table = pd.read_csv(annotation_csv)
+        assert {"event_id", "success", "outcome"} <= set(annotation_table.columns)

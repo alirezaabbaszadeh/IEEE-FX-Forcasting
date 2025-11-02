@@ -49,3 +49,10 @@ training:
 
 multirun:
   seeds: [42, 1337]
+
+interpret:
+  enabled: false
+  model_module: null
+  model_factory: build_model
+  output_dir: artifacts/interpretability
+  runs: []
