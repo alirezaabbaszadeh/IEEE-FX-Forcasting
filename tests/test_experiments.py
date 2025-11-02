@@ -5,6 +5,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from src.analysis import StatisticalAnalyzer
 from src.experiments import HyperparameterSearch, MultiRunExperiment
@@ -62,11 +63,28 @@ def test_statistical_analysis_outputs(tmp_path: Path) -> None:
 
     effect_sizes = tables["effect_sizes"]
     assert set(effect_sizes.columns) >= {"cohens_d", "hedges_g", "glass_delta", "rank_biserial"}
-    dm_table = tables["diebold_mariano"]
-    assert {"dm_stat", "variance"}.issubset(dm_table.columns)
 
-    bootstrap = tables["bootstrap_ci"]
-    assert {"estimate", "lower", "upper", "coverage"}.issubset(bootstrap.columns)
+    anova = tables["anova"].iloc[0]
+    assert anova["f_stat"] == pytest.approx(52.666667, rel=1e-6)
+    assert anova["eta_squared"] == pytest.approx(0.897727, rel=1e-6)
+
+    effect_lookup = effect_sizes.set_index("comparison")
+    assert effect_lookup.loc["model_b vs baseline", "cohens_d"] == pytest.approx(
+        -1.897367, rel=1e-6
+    )
+    assert effect_lookup.loc["model_c vs baseline", "cohens_d"] == pytest.approx(
+        4.427189, rel=1e-6
+    )
+
+    dm_table = tables["diebold_mariano"]
+    baseline_vs_c = dm_table[(dm_table["model_a"] == "baseline") & (dm_table["model_b"] == "model_c")].iloc[0]
+    assert baseline_vs_c["dm_stat"] == pytest.approx(-8.846215, rel=1e-6)
+    assert baseline_vs_c["variance"] == pytest.approx(4.0e-4, rel=1e-3)
+
+    bootstrap = tables["bootstrap_ci"].set_index("model")
+    assert bootstrap.loc["baseline", "estimate"] == pytest.approx(0.53, rel=1e-6)
+    assert bootstrap.loc["baseline", "lower"] == pytest.approx(0.518, rel=1e-3)
+    assert bootstrap.loc["model_c", "upper"] == pytest.approx(0.612, rel=1e-3)
 
 
 def test_hyperparameter_search_stub(tmp_path: Path) -> None:
@@ -158,4 +176,76 @@ def test_hyperparameter_search_persists_multi_run_artifacts(tmp_path: Path) -> N
         assert "config_hash" in entry
         assert "aggregate" in entry
         assert entry["aggregate"]["val_score"]["n"] == 5
+
+
+def test_hyperparameter_search_regression(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    base_seed = 5
+    num_runs = 5
+
+    def _regression_run(config):
+        amplitude = float(config.get("amplitude", 0.5))
+        base = float(config.get("base", 0.5))
+        rng = np.random.default_rng(config["seed"])
+        signal = base + 0.4 * (amplitude - 0.5)
+        noise = rng.normal(scale=5e-5)
+        return {"metrics": {"val_score": float(signal + noise)}}
+
+    search = HyperparameterSearch(
+        _regression_run,
+        base_config={"base": 0.5, "amplitude": 0.5},
+        search_space={
+            "amplitude": {"type": "float", "low": 0.45, "high": 0.65},
+        },
+        metric="val_score",
+        run_id="regression",
+        output_dir=tmp_path,
+        direction="maximize",
+        num_runs=num_runs,
+        base_seed=base_seed,
+        top_k=2,
+    )
+
+    from src.experiments import search as search_module
+
+    sampler_mod = search_module.optuna.samplers
+    base_sampler_cls = sampler_mod.SobolSampler
+
+    class _SeededSampler(base_sampler_cls):
+        def __init__(self):
+            super().__init__(seed=0)
+
+    monkeypatch.setattr(sampler_mod, "SobolSampler", _SeededSampler)
+    monkeypatch.setattr(
+        search_module.optuna.Trial,
+        "set_user_attr",
+        lambda self, name, value: None,
+        raising=False,
+    )
+
+    result = search.optimize(n_trials=2, sampler="sobol")
+
+    assert result["results_path"].exists()
+    assert len(result["records"]) == 2
+
+    seeds = list(range(base_seed, base_seed + num_runs))
+    amplitude_values = [float(record["params"]["amplitude"]) for record in result["records"]]
+
+    expected_means: list[float] = []
+    for amplitude in amplitude_values:
+        values = []
+        for seed in seeds:
+            rng = np.random.default_rng(seed)
+            signal = 0.5 + 0.4 * (float(amplitude) - 0.5)
+            values.append(float(signal + rng.normal(scale=5e-5)))
+        expected_means.append(float(np.mean(values)))
+
+    for record, expected_mean in zip(result["records"], expected_means, strict=True):
+        aggregate = record["aggregate"]["val_score"]
+        assert aggregate["n"] == float(num_runs)
+        assert aggregate["mean"] == pytest.approx(expected_mean, rel=1e-6)
+
+    best_amplitude = max(amplitude_values)
+    assert pytest.approx(best_amplitude, rel=1e-9) == pytest.approx(
+        float(result["best_params"].get("amplitude", best_amplitude)), rel=1e-9
+    )
 
