@@ -10,12 +10,16 @@ from pathlib import Path
 from statistics import NormalDist
 from typing import Dict, List, Mapping, Sequence, Tuple
 
+import logging
+
 import matplotlib
 
 matplotlib.use("Agg", force=True)  # pragma: no cover - headless execution
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+
+LOGGER = logging.getLogger(__name__)
 
 try:  # pragma: no cover - optional dependency
     from scipy import stats as scipy_stats  # type: ignore
@@ -283,6 +287,71 @@ def dunn_posthoc(
             row["p_adjusted"] = float(raw_p[idx])
             row["reject"] = bool(raw_p[idx] < alpha)
     return rows
+
+
+def log_assumption_diagnostics(
+    dm_cache: pd.DataFrame,
+    *,
+    metric: str = "squared_error",
+    alpha: float = 0.05,
+) -> None:
+    if dm_cache.empty:
+        LOGGER.warning("DM cache is empty; skipping assumption diagnostics")
+        return
+    if metric not in dm_cache.columns:
+        LOGGER.warning("Metric '%s' not present in DM cache; skipping assumption diagnostics", metric)
+        return
+    if scipy_stats is None:
+        LOGGER.warning("SciPy is unavailable; cannot evaluate normality or homoscedasticity assumptions")
+        return
+
+    grouped = dm_cache.groupby(["pair", "horizon"], dropna=False)
+    for (pair, horizon), slice_df in grouped:
+        LOGGER.info("Assumption checks for pair=%s horizon=%s (metric=%s)", pair, horizon, metric)
+        model_groups: List[np.ndarray] = []
+        for model, model_df in slice_df.groupby("model"):
+            values = model_df[metric].dropna().to_numpy(dtype=float)
+            if values.size < 3 or values.size > 5000:
+                LOGGER.info(
+                    "  Model %s has insufficient samples for Shapiro-Wilk (n=%d)",
+                    model,
+                    values.size,
+                )
+            else:
+                shapiro = scipy_stats.shapiro(values)
+                decision = (
+                    "reject normality"
+                    if shapiro.pvalue < alpha
+                    else "fail to reject normality"
+                )
+                LOGGER.info(
+                    "  Shapiro-Wilk (%s): W=%.4f, p=%.4g -> %s at alpha=%.2f",
+                    model,
+                    shapiro.statistic,
+                    shapiro.pvalue,
+                    decision,
+                    alpha,
+                )
+            if values.size >= 2:
+                model_groups.append(values)
+
+        if len(model_groups) < 2:
+            LOGGER.info("  Skipping Levene test (need at least two groups with >=2 samples)")
+            continue
+
+        levene = scipy_stats.levene(*model_groups)
+        decision = (
+            "reject equal variances"
+            if levene.pvalue < alpha
+            else "fail to reject equal variances"
+        )
+        LOGGER.info(
+            "  Levene test: W=%.4f, p=%.4g -> %s at alpha=%.2f",
+            levene.statistic,
+            levene.pvalue,
+            decision,
+            alpha,
+        )
 
 
 def _newey_west_variance(diff: np.ndarray, lag: int) -> float:
@@ -739,4 +808,45 @@ class StatisticalAnalyzer:
         dm_table.to_json(stats_root / "diebold_mariano_repository.json", orient="records", indent=2)
         tables["diebold_mariano_repository"] = dm_table
         return tables
+
+
+def analyze_dm_cache(
+    dm_cache: pd.DataFrame,
+    *,
+    run_id: str,
+    output_dir: Path | str = Path("artifacts"),
+    baseline_model: str,
+    metric: str = "squared_error",
+    alpha: float = 0.05,
+    assumption_alpha: float = 0.05,
+    newey_west_lag: int = 1,
+    higher_is_better: bool = False,
+    random_state: int | np.random.Generator | None = None,
+) -> Dict[str, pd.DataFrame]:
+    if dm_cache.empty:
+        LOGGER.warning("DM cache is empty; skipping statistical post-processing")
+        return {}
+    if metric not in dm_cache.columns:
+        raise KeyError(f"Metric column '{metric}' not present in DM cache")
+
+    metric_frame = (
+        dm_cache[["pair", "horizon", "model", metric]]
+        .rename(columns={metric: "value"})
+        .dropna(subset=["value"])
+    )
+    if metric_frame.empty:
+        LOGGER.warning("No valid observations for metric '%s'; skipping statistical post-processing", metric)
+        return {}
+
+    log_assumption_diagnostics(dm_cache, metric=metric, alpha=assumption_alpha)
+
+    analyzer = StatisticalAnalyzer(
+        run_id=run_id,
+        output_dir=output_dir,
+        alpha=alpha,
+        newey_west_lag=newey_west_lag,
+        random_state=random_state,
+        higher_is_better=higher_is_better,
+    )
+    return analyzer.analyze(metric_frame, baseline=baseline_model)
 

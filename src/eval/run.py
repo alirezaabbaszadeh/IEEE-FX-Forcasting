@@ -10,9 +10,24 @@ from typing import Iterable, List
 import numpy as np
 import pandas as pd
 
+from src.analysis.stats import analyze_dm_cache
+
 LOGGER = logging.getLogger(__name__)
 
 REQUIRED_COLUMNS = {"pair", "horizon", "timestamp", "y_true", "y_pred"}
+DEFAULT_MODEL_NAME = "model_0"
+DM_CACHE_COLUMNS = (
+    "pair",
+    "horizon",
+    "model",
+    "timestamp",
+    "timestamp_utc",
+    "y_true",
+    "y_pred",
+    "error",
+    "abs_error",
+    "squared_error",
+)
 
 
 def _parse_horizon(value: object) -> str:
@@ -111,12 +126,17 @@ def aggregate_metrics(predictions: pd.DataFrame, session_timezone: str = "UTC") 
         missing = REQUIRED_COLUMNS.difference(predictions.columns)
         raise KeyError(f"Missing required columns: {sorted(missing)}")
     frame = predictions.copy()
+    if "model" not in frame.columns:
+        frame["model"] = DEFAULT_MODEL_NAME
+    else:
+        frame["model"] = frame["model"].fillna(DEFAULT_MODEL_NAME).astype(str)
     frame["horizon"] = frame["horizon"].apply(_parse_horizon)
     frame["timestamp"] = _ensure_timezone(frame["timestamp"], "UTC")
     frame["session_ts"] = frame["timestamp"].dt.tz_convert(session_timezone)
     records: List[dict[str, object]] = []
-    grouped = frame.groupby(["pair", "horizon"], sort=False)
-    for (pair, horizon), group in grouped:
+    dm_cache_frames: List[pd.DataFrame] = []
+    grouped = frame.groupby(["pair", "horizon", "model"], sort=False)
+    for (pair, horizon, model), group in grouped:
         y_true = group["y_true"].to_numpy()
         y_pred = group["y_pred"].to_numpy()
         metrics = _base_metrics(y_true, y_pred)
@@ -125,6 +145,7 @@ def aggregate_metrics(predictions: pd.DataFrame, session_timezone: str = "UTC") 
                 {
                     "pair": pair,
                     "horizon": horizon,
+                    "model": model,
                     "group": "overall",
                     "segment": "all",
                     "metric": metric_name,
@@ -138,9 +159,10 @@ def aggregate_metrics(predictions: pd.DataFrame, session_timezone: str = "UTC") 
             entropy_mean = float(np.mean(gating_entropy))
             entropy_corr = _safe_correlation(gating_entropy, volatility)
             LOGGER.info(
-                "Pair %s | horizon %s - gating entropy mean: %.4f | corr(|y_true|): %s",
+                "Pair %s | horizon %s | model %s - gating entropy mean: %.4f | corr(|y_true|): %s",
                 pair,
                 horizon,
+                model,
                 entropy_mean,
                 "nan" if np.isnan(entropy_corr) else f"{entropy_corr:.4f}",
             )
@@ -148,6 +170,7 @@ def aggregate_metrics(predictions: pd.DataFrame, session_timezone: str = "UTC") 
                 {
                     "pair": pair,
                     "horizon": horizon,
+                    "model": model,
                     "group": "interpretability",
                     "segment": "gating",
                     "metric": "entropy_mean",
@@ -159,6 +182,7 @@ def aggregate_metrics(predictions: pd.DataFrame, session_timezone: str = "UTC") 
                 {
                     "pair": pair,
                     "horizon": horizon,
+                    "model": model,
                     "group": "interpretability",
                     "segment": "gating",
                     "metric": "entropy_volatility_corr",
@@ -179,6 +203,7 @@ def aggregate_metrics(predictions: pd.DataFrame, session_timezone: str = "UTC") 
                         {
                             "pair": pair,
                             "horizon": horizon,
+                            "model": model,
                             "group": "volatility",
                             "segment": regime,
                             "metric": metric_name,
@@ -198,6 +223,7 @@ def aggregate_metrics(predictions: pd.DataFrame, session_timezone: str = "UTC") 
                     {
                         "pair": pair,
                         "horizon": horizon,
+                        "model": model,
                         "group": "session",
                         "segment": session,
                         "metric": metric_name,
@@ -205,7 +231,31 @@ def aggregate_metrics(predictions: pd.DataFrame, session_timezone: str = "UTC") 
                         "count": int(mask.sum()),
                     }
                 )
-    return pd.DataFrame.from_records(records)
+        errors = y_pred - y_true
+        dm_cache_frames.append(
+            pd.DataFrame(
+                {
+                    "pair": pair,
+                    "horizon": horizon,
+                    "model": model,
+                    "timestamp": group["session_ts"].astype(str).to_numpy(),
+                    "timestamp_utc": group["timestamp"].astype(str).to_numpy(),
+                    "y_true": y_true,
+                    "y_pred": y_pred,
+                    "error": errors,
+                    "abs_error": np.abs(errors),
+                    "squared_error": np.square(errors),
+                }
+            )
+        )
+    metrics_df = pd.DataFrame.from_records(records)
+    if dm_cache_frames:
+        metrics_df.attrs["dm_cache"] = pd.concat(dm_cache_frames, ignore_index=True)[
+            list(DM_CACHE_COLUMNS)
+        ]
+    else:
+        metrics_df.attrs["dm_cache"] = pd.DataFrame(columns=DM_CACHE_COLUMNS)
+    return metrics_df
 
 
 def run_evaluation(
@@ -213,6 +263,12 @@ def run_evaluation(
     run_id: str,
     artifacts_dir: Path = Path("artifacts"),
     session_timezone: str = "UTC",
+    baseline_model: str | None = None,
+    alpha: float = 0.05,
+    assumption_alpha: float = 0.05,
+    newey_west_lag: int = 1,
+    higher_is_better: bool = False,
+    stats_metric: str = "squared_error",
 ) -> Path:
     """Load predictions, aggregate metrics, and persist summaries to disk."""
 
@@ -222,6 +278,48 @@ def run_evaluation(
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / "metrics.csv"
     metrics.to_csv(output_path, index=False)
+
+    dm_cache = metrics.attrs.get("dm_cache")
+    dm_cache_path: Path | None = None
+    if isinstance(dm_cache, pd.DataFrame) and not dm_cache.empty:
+        dm_cache_path = output_dir / "dm_cache.csv"
+        dm_cache.to_csv(dm_cache_path, index=False)
+        LOGGER.info("Persisted DM cache to %s", dm_cache_path)
+    elif isinstance(dm_cache, pd.DataFrame):
+        LOGGER.warning("DM cache is empty; statistical tests will be skipped unless additional data is provided")
+
+    if baseline_model and isinstance(dm_cache, pd.DataFrame) and not dm_cache.empty:
+        stats_tables = analyze_dm_cache(
+            dm_cache,
+            run_id=run_id,
+            output_dir=artifacts_dir,
+            baseline_model=baseline_model,
+            metric=stats_metric,
+            alpha=alpha,
+            assumption_alpha=assumption_alpha,
+            newey_west_lag=newey_west_lag,
+            higher_is_better=higher_is_better,
+        )
+        if stats_tables:
+            stats_dir = artifacts_dir / run_id / "stats"
+            LOGGER.info("Statistical summaries stored in %s", stats_dir)
+            effect_sizes = stats_tables.get("effect_sizes")
+            if effect_sizes is not None and not effect_sizes.empty:
+                top_effect = effect_sizes.reindex(
+                    effect_sizes["hedges_g"].abs().sort_values(ascending=False).index
+                ).iloc[0]
+                LOGGER.info(
+                    "Largest effect vs baseline %s: %s | Hedges' g=%.4f | rank-biserial=%.4f",
+                    baseline_model,
+                    top_effect["comparison"],
+                    float(top_effect.get("hedges_g", float("nan"))),
+                    float(top_effect.get("rank_biserial", float("nan"))),
+                )
+        else:
+            LOGGER.warning("Statistical analysis returned no tables; check DM cache contents")
+    elif baseline_model:
+        LOGGER.warning("Baseline model specified but DM cache unavailable; skipping statistical analysis")
+
     return output_path
 
 
@@ -245,6 +343,39 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
         default="UTC",
         help="Timezone used for trading session bucketing",
     )
+    parser.add_argument(
+        "--baseline-model",
+        help="Model name to treat as the baseline for effect sizes and Tukey HSD",
+    )
+    parser.add_argument(
+        "--alpha",
+        type=float,
+        default=0.05,
+        help="Significance level for omnibus and post-hoc tests",
+    )
+    parser.add_argument(
+        "--assumption-alpha",
+        type=float,
+        default=0.05,
+        help="Significance level used for normality and homoscedasticity diagnostics",
+    )
+    parser.add_argument(
+        "--newey-west-lag",
+        type=int,
+        default=1,
+        help="Lag parameter for Newey-West variance estimation in DM tests",
+    )
+    parser.add_argument(
+        "--higher-is-better",
+        action="store_true",
+        help="Treat the metric as higher-is-better when computing effect sizes",
+    )
+    parser.add_argument(
+        "--stats-metric",
+        default="squared_error",
+        choices=["error", "abs_error", "squared_error"],
+        help="Loss metric from the DM cache to analyse",
+    )
     return parser.parse_args(argv)
 
 
@@ -256,6 +387,12 @@ def main(argv: Iterable[str] | None = None) -> None:
         run_id=args.run_id,
         artifacts_dir=args.artifacts_dir,
         session_timezone=args.session_timezone,
+        baseline_model=args.baseline_model,
+        alpha=args.alpha,
+        assumption_alpha=args.assumption_alpha,
+        newey_west_lag=args.newey_west_lag,
+        higher_is_better=args.higher_is_better,
+        stats_metric=args.stats_metric,
     )
     LOGGER.info("Saved aggregated metrics to %s", output_path)
 
