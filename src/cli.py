@@ -29,11 +29,16 @@ from src.data.dataset import (
 from src.experiments.multirun import RunResult, run_multirun
 from src.models.forecasting import ModelConfig, TemporalForecastingModel
 from src.training.engine import TrainerConfig, TrainingSummary, train
+from src.utils.artifacts import (
+    build_run_metadata,
+    collect_environment_lockfiles,
+    compute_dataset_checksums,
+    ensure_config_snapshot,
+)
 from src.utils.repro import (
     build_run_provenance,
     get_git_revision,
     get_hardware_snapshot,
-    hash_config,
     seed_everything,
 )
 
@@ -154,12 +159,22 @@ def _build_trainer_config(cfg: DictConfig) -> TrainerConfig:
     )
 
 
-def _prepare_metadata(cfg: DictConfig) -> dict[str, object]:
-    return {
-        "config_hash": hash_config(cfg),
+def _prepare_metadata(cfg: DictConfig, *, original_cwd: Path) -> dict[str, object]:
+    artifacts_root = original_cwd / "artifacts"
+    config_info = ensure_config_snapshot(cfg, artifacts_root)
+    lockfiles = collect_environment_lockfiles(original_cwd)
+    metadata: dict[str, object] = {
+        "config": {
+            "hash": config_info["hash"],
+            "path": str(Path(config_info["path"]).relative_to(original_cwd)),
+        },
+        "config_hash": config_info["hash"],
         "git_sha": get_git_revision(),
         "hardware": get_hardware_snapshot(),
     }
+    if lockfiles:
+        metadata["environment"] = {"lockfiles": lockfiles}
+    return metadata
 
 
 def _run_post_training_benchmarks(
@@ -554,7 +569,8 @@ def _single_run(cfg: DictConfig) -> None:
     logging.getLogger().setLevel(logging_level)
     LOGGER.info("Loaded configuration:\n%s", OmegaConf.to_yaml(cfg))
 
-    metadata = _prepare_metadata(cfg)
+    metadata = _prepare_metadata(cfg, original_cwd=original_cwd)
+    config_hash = str(metadata.get("config_hash"))
     data_cfg = _build_data_config(cfg.data, original_cwd)
     datasets = prepare_datasets(data_cfg)
 
@@ -571,7 +587,12 @@ def _single_run(cfg: DictConfig) -> None:
             dataset_key[2],
         )
 
-        output_dir = _resolve_output_directory(cfg, original_cwd, dataset=dataset_metadata)
+        output_dir = _resolve_output_directory(
+            cfg,
+            original_cwd,
+            dataset=dataset_metadata,
+            config_hash=config_hash,
+        )
         result = _run_training_once(
             cfg,
             original_cwd,
@@ -605,9 +626,10 @@ def _resolve_output_directory(
     original_cwd: Path,
     *,
     dataset: Mapping[str, object] | None = None,
+    config_hash: str,
 ) -> Path:
     model_name = _slugify(cfg.model.get("name", TemporalForecastingModel.__name__))
-    base = original_cwd / "artifacts" / "runs" / model_name
+    base = original_cwd / "artifacts" / "runs" / model_name / config_hash
     if dataset is None:
         pair = _slugify(cfg.data.pairs[0]) if cfg.data.pairs else "all"
         horizon = _slugify(cfg.data.horizons[0]) if cfg.data.horizons else "all"
@@ -627,14 +649,14 @@ def _write_single_run_artifacts(output_dir: Path, result: RunResult) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     metrics = _summarise_training(result.summary)
-    with (output_dir / "metrics.json").open("w", encoding="utf-8") as handle:
+    metrics_path = output_dir / "metrics.json"
+    with metrics_path.open("w", encoding="utf-8") as handle:
         json.dump(metrics, handle, indent=2, sort_keys=True)
 
-    metadata = dict(result.metadata)
-    metadata["seed"] = result.seed
-    metadata.setdefault("device", result.summary.device)
-    with (output_dir / "metadata.json").open("w", encoding="utf-8") as handle:
-        json.dump(metadata, handle, indent=2, sort_keys=True)
+    artifact_index: dict[str, object] = {
+        "metrics": metrics_path.name,
+        "metadata": "metadata.json",
+    }
 
     if getattr(result.summary, "benchmarks", None):
         try:
@@ -643,8 +665,33 @@ def _write_single_run_artifacts(output_dir: Path, result: RunResult) -> None:
             LOGGER.warning("Benchmarks collected but analysis utilities unavailable; skipping save")
         else:
             benchmarks_dir = output_dir / "benchmarks"
+            benchmark_entries: list[dict[str, str]] = []
             for name, report in result.summary.benchmarks.items():
-                save_report(report, benchmarks_dir, stem=name)
+                saved_paths = save_report(report, benchmarks_dir, stem=name)
+                benchmark_entries.append(
+                    {
+                        "name": name,
+                        "json": str(saved_paths.json_path.relative_to(output_dir)),
+                        "csv": str(saved_paths.csv_path.relative_to(output_dir)),
+                    }
+                )
+            if benchmark_entries:
+                artifact_index["benchmarks"] = benchmark_entries
+
+    metadata = dict(result.metadata)
+    dataset_meta = dict(metadata.get("dataset") or {})
+    dataset_checksums = compute_dataset_checksums(dataset_meta)
+    metadata_payload = build_run_metadata(
+        metadata,
+        seed=result.seed,
+        device=result.summary.device,
+        artifact_index=artifact_index,
+        dataset_checksums=dataset_checksums,
+    )
+
+    metadata_path = output_dir / "metadata.json"
+    with metadata_path.open("w", encoding="utf-8") as handle:
+        json.dump(metadata_payload, handle, indent=2, sort_keys=True)
 
     LOGGER.info("Persisted training artifacts to %s", output_dir)
 
@@ -664,7 +711,8 @@ def _multirun_entry(cfg: DictConfig) -> None:
         seeds = [cfg.seed]
     seeds = [int(seed) for seed in seeds]
 
-    base_metadata = _prepare_metadata(cfg)
+    base_metadata = _prepare_metadata(cfg, original_cwd=original_cwd)
+    config_hash = str(base_metadata.get("config_hash"))
 
     data_cfg = _build_data_config(cfg.data, original_cwd)
     datasets = prepare_datasets(data_cfg)
@@ -675,7 +723,12 @@ def _multirun_entry(cfg: DictConfig) -> None:
         dataset_metadata.setdefault("horizon", dataset_key[1])
         dataset_metadata.setdefault("window_id", dataset_key[2])
 
-        output_dir = _resolve_output_directory(cfg, original_cwd, dataset=dataset_metadata)
+        output_dir = _resolve_output_directory(
+            cfg,
+            original_cwd,
+            dataset=dataset_metadata,
+            config_hash=config_hash,
+        )
 
         def _runner(seed: int, *, _dataset_key=dataset_key, _window=window) -> RunResult:
             cfg_copy = OmegaConf.create(OmegaConf.to_container(cfg, resolve=True))

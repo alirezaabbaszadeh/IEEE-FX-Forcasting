@@ -7,6 +7,7 @@ import os
 import platform
 import random
 import subprocess
+from pathlib import Path
 from typing import Any, Mapping, MutableMapping
 
 import numpy as np
@@ -80,6 +81,16 @@ def hash_config(cfg: DictConfig | Mapping[str, Any]) -> str:
 
     serialised = json.dumps(container, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(serialised.encode("utf-8")).hexdigest()
+
+
+def hash_file(path: Path) -> str:
+    """Compute a SHA256 digest for the provided file path."""
+
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(8192), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def get_git_revision(default: str = "unknown") -> str:

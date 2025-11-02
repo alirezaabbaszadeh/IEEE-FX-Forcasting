@@ -1,0 +1,10 @@
+# @package interpret
+
+enabled: false
+model_module: null
+model_factory: build_model
+output_dir: artifacts/interpretability
+runs: []
+seed: null
+device: null
+limit: null

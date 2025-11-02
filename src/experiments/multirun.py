@@ -16,6 +16,8 @@ except ModuleNotFoundError:  # pragma: no cover - runtime fallback when scipy mi
 if TYPE_CHECKING:  # pragma: no cover - type-checking support only
     from src.training.engine import TrainingSummary
 
+from src.utils.artifacts import build_run_metadata, compute_dataset_checksums
+
 
 @dataclass
 class RunResult:
@@ -141,16 +143,31 @@ def _write_run_artifacts(output_dir: Path, result: RunResult) -> tuple[dict[str,
     run_dir.mkdir(parents=True, exist_ok=True)
 
     metrics = _extract_summary_metrics(result.summary)
-    with (run_dir / "metrics.json").open("w", encoding="utf-8") as handle:
+    metrics_path = run_dir / "metrics.json"
+    with metrics_path.open("w", encoding="utf-8") as handle:
         json.dump(metrics, handle, indent=2, sort_keys=True)
 
-    run_metadata = dict(result.metadata)
-    run_metadata["seed"] = result.seed
-    run_metadata.setdefault("device", result.summary.device)
-    with (run_dir / "metadata.json").open("w", encoding="utf-8") as handle:
-        json.dump(run_metadata, handle, indent=2, sort_keys=True)
+    artifact_index = {
+        "metrics": metrics_path.name,
+        "metadata": "metadata.json",
+    }
 
-    return metrics, run_metadata
+    run_metadata = dict(result.metadata)
+    dataset_meta = dict(run_metadata.get("dataset") or {})
+    dataset_checksums = compute_dataset_checksums(dataset_meta)
+    metadata_payload = build_run_metadata(
+        run_metadata,
+        seed=result.seed,
+        device=result.summary.device,
+        artifact_index=artifact_index,
+        dataset_checksums=dataset_checksums,
+    )
+
+    metadata_path = run_dir / "metadata.json"
+    with metadata_path.open("w", encoding="utf-8") as handle:
+        json.dump(metadata_payload, handle, indent=2, sort_keys=True)
+
+    return metrics, metadata_payload
 
 
 def _write_summary(output_dir: Path, aggregated: dict[str, dict[str, float]]) -> None:
@@ -204,6 +221,11 @@ def run_multirun(
     metadata_blob["runs"] = len(seeds)
     metadata_blob["metrics"] = aggregated
     metadata_blob["run_records"] = run_records
+    metadata_blob["artifacts"] = {
+        "metadata": "metadata.json",
+        "summary": "summary.csv",
+        "runs": [f"seed-{seed}" for seed in seeds],
+    }
     with (output_dir / "metadata.json").open("w", encoding="utf-8") as handle:
         json.dump(metadata_blob, handle, indent=2, sort_keys=True)
 
