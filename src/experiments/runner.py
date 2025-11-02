@@ -54,6 +54,7 @@ class MultiRunResult:
     runs: List[RunRecord]
     aggregate: Dict[str, Dict[str, float]]
     metadata_path: Path
+    seeds: List[int]
 
 
 class MultiRunExperiment:
@@ -146,5 +147,10 @@ class MultiRunExperiment:
         metadata_path = run_root / "metadata.json"
         metadata_path.write_text(json.dumps(metadata, indent=2))
 
-        return MultiRunResult(runs=records, aggregate=aggregate, metadata_path=metadata_path)
+        return MultiRunResult(
+            runs=records,
+            aggregate=aggregate,
+            metadata_path=metadata_path,
+            seeds=seeds[: self.num_runs],
+        )
 

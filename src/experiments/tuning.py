@@ -25,6 +25,13 @@ try:  # pragma: no cover - exercised indirectly when Optuna is installed
 except ImportError:  # pragma: no cover - fallback path used in tests
     from . import _optuna_stub as optuna  # type: ignore
 
+try:  # pragma: no cover - optional dependency probing
+    import scipy.stats.qmc  # type: ignore
+except ModuleNotFoundError:  # pragma: no cover - SciPy not installed
+    _SCIPY_AVAILABLE = False
+else:  # pragma: no cover - SciPy available
+    _SCIPY_AVAILABLE = True
+
 
 @dataclass
 class SearchSpaceConfig:
@@ -176,12 +183,14 @@ class HyperparameterTuner:
         ranking_df.to_csv(ranking_path, index=False)
 
         plots_dir = self.artifact_root / "plots"
-        plot_paths = plot_response_curves(
+        artefacts = plot_response_curves(
             results_df,
             metric_column="value",
             output_dir=plots_dir,
             parameter_columns=self._parameter_columns,
         )
+        plot_paths = [paths["plot"] for paths in artefacts.values()]
+        summary_paths = [paths["summary"] for paths in artefacts.values()]
 
         self._log_top_configs()
 
@@ -192,6 +201,7 @@ class HyperparameterTuner:
             "results_path": results_path,
             "ranking_path": ranking_path,
             "plot_paths": plot_paths,
+            "summary_paths": summary_paths,
         }
 
     # ------------------------------------------------------------------
@@ -202,7 +212,9 @@ class HyperparameterTuner:
         sobol = getattr(optuna.samplers, "SobolSampler", None)
         if sobol is not None:
             return sobol(seed=seed)
-        return optuna.samplers.QMCSampler(qmc_type="sobol", seed=seed)
+        if _SCIPY_AVAILABLE:
+            return optuna.samplers.QMCSampler(qmc_type="sobol", seed=seed)
+        return optuna.samplers.RandomSampler(seed=seed)
 
     def _suggest_block(
         self, trial: Any, block_name: str, space: Mapping[str, Mapping[str, Any]]
