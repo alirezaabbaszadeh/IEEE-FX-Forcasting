@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -186,13 +187,21 @@ def generate_expert_utilization_trace(
     for layer_idx, summary in enumerate(summaries):
         mean_activation = summary.get("mean_activation", [])
         top_frequency = summary.get("top_frequency", [])
-        for expert_idx, (mean_val, freq_val) in enumerate(zip(mean_activation, top_frequency)):
+        mean_entropy = summary.get("mean_entropy", [])
+        max_len = max(len(mean_activation), len(top_frequency), len(mean_entropy))
+        for expert_idx in range(max_len):
+            mean_val = float(mean_activation[expert_idx]) if expert_idx < len(mean_activation) else float("nan")
+            freq_val = float(top_frequency[expert_idx]) if expert_idx < len(top_frequency) else float("nan")
+            entropy_val = (
+                float(mean_entropy[expert_idx]) if expert_idx < len(mean_entropy) else float("nan")
+            )
             records.append(
                 {
                     "layer": layer_idx,
                     "expert": expert_idx,
-                    "mean_activation": float(mean_val),
-                    "top_frequency": float(freq_val),
+                    "mean_activation": mean_val,
+                    "top_frequency": freq_val,
+                    "mean_entropy": entropy_val,
                 }
             )
     table = pd.DataFrame.from_records(records)
@@ -350,6 +359,33 @@ def analyse_market_events(
         trace_csv = experts_dir / "utilization.csv"
         trace.table.to_csv(trace_csv, index=False)
 
+        gating_records: List[Dict[str, object]] = []
+        if "mean_entropy" in trace.table.columns and not trace.table.empty:
+            entropy_table = trace.table.dropna(subset=["mean_entropy"])
+            for layer_idx, layer_df in entropy_table.groupby("layer"):
+                corr_activation = layer_df["mean_entropy"].corr(layer_df["mean_activation"])
+                corr_frequency = layer_df["mean_entropy"].corr(layer_df["top_frequency"])
+                gating_records.append(
+                    {
+                        "layer": int(layer_idx),
+                        "entropy_activation_corr": float(corr_activation)
+                        if pd.notna(corr_activation)
+                        else float("nan"),
+                        "entropy_top_frequency_corr": float(corr_frequency)
+                        if pd.notna(corr_frequency)
+                        else float("nan"),
+                    }
+                )
+        if gating_records:
+            gating_entropy_df = pd.DataFrame.from_records(gating_records)
+        else:
+            gating_entropy_df = pd.DataFrame(
+                columns=["layer", "entropy_activation_corr", "entropy_top_frequency_corr"]
+            )
+        gating_entropy_path = experts_dir / "gating_entropy_correlations.csv"
+        gating_entropy_df.to_csv(gating_entropy_path, index=False)
+
+        attrib_dir.mkdir(parents=True, exist_ok=True)
         attribution = compute_gradient_attributions(
             model,
             event.inputs,
@@ -359,6 +395,36 @@ def analyse_market_events(
             device=device,
         )
         attribution.table.to_csv(attrib_dir / "attributions.csv", index=False)
+
+        event_metadata = dict(event.metadata or {})
+        success_value = event_metadata.get("success")
+        if success_value is not None:
+            success_value = bool(success_value)
+        outcome_label = event_metadata.get("outcome") or event_metadata.get("label")
+        annotation_csv_path = event_dir / "annotations.csv"
+        annotation_json_path = event_dir / "annotations.json"
+        pd.DataFrame(
+            [
+                {
+                    "event_id": event.event_id,
+                    "success": success_value,
+                    "outcome": outcome_label,
+                }
+            ]
+        ).to_csv(annotation_csv_path, index=False)
+        with annotation_json_path.open("w", encoding="utf-8") as handle:
+            json.dump(
+                {
+                    "event_id": event.event_id,
+                    "success": success_value,
+                    "outcome": outcome_label,
+                    "metadata": event_metadata,
+                },
+                handle,
+                indent=2,
+                sort_keys=True,
+                default=str,
+            )
 
         result = MarketEventArtifactSummary(
             event_id=event.event_id,
@@ -380,6 +446,10 @@ def analyse_market_events(
                 "expert_trace_figure": str(trace.figure_path) if trace.figure_path else "",
                 "attribution_csv": str(attrib_dir / "attributions.csv"),
                 "attribution_figure": str(attribution.figure_path) if attribution.figure_path else "",
+                "gating_entropy_csv": str(gating_entropy_path),
+                "annotation_csv": str(annotation_csv_path),
+                "annotation_json": str(annotation_json_path),
+                "success": success_value,
                 **{f"meta_{key}": value for key, value in (event.metadata or {}).items()},
             }
         )

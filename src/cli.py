@@ -7,7 +7,7 @@ import json
 import logging
 import sys
 from pathlib import Path
-from typing import Iterable, List, Mapping, Optional, Tuple
+from typing import Any, Iterable, List, Mapping, Optional, Tuple
 
 import hydra
 import pandas as pd
@@ -185,6 +185,8 @@ def run_interpret_command(
     seed: int,
     limit: Optional[int] = None,
     device: Optional[str] = None,
+    pair: Optional[str] = None,
+    horizon: Optional[object] = None,
 ) -> Path:
     LOGGER.info("Loading interpretability model via %s.%s", model_module, model_factory)
     seed_everything(seed)
@@ -206,15 +208,48 @@ def run_interpret_command(
         raise ValueError("No events provided for interpretability analysis")
 
     device_obj = torch.device(device) if device else None
-    results, metadata = analyse_market_events(model, events, output_dir, device=device_obj)
+    derived_pair = pair
+    if derived_pair is None:
+        for event in events:
+            event_pair = event.metadata.get("pair") if event.metadata else None
+            if event_pair is not None:
+                derived_pair = str(event_pair)
+                break
+    derived_pair = derived_pair or "unknown"
+
+    derived_horizon = horizon
+    if derived_horizon is None:
+        for event in events:
+            event_metadata = event.metadata or {}
+            horizon_value = (
+                event_metadata.get("horizon")
+                or event_metadata.get("horizon_steps")
+                or event_metadata.get("horizon_label")
+            )
+            if horizon_value is not None:
+                derived_horizon = str(horizon_value)
+                break
+    derived_horizon = derived_horizon or "unknown"
+
+    structured_root = (
+        Path(output_dir)
+        / _slugify(derived_pair)
+        / _slugify(str(derived_horizon))
+        / f"seed-{seed}"
+    )
+    structured_root.mkdir(parents=True, exist_ok=True)
+
+    results, metadata = analyse_market_events(model, events, structured_root, device=device_obj)
 
     metadata = metadata.assign(
         seed=seed,
         model_module=model_module,
         model_factory=model_factory,
         event_count=len(results),
+        pair=derived_pair,
+        horizon=derived_horizon,
     )
-    metadata_path = Path(output_dir) / "metadata.csv"
+    metadata_path = Path(structured_root) / "metadata.csv"
     metadata.to_csv(metadata_path, index=False)
     LOGGER.info("Saved interpretability metadata to %s", metadata_path)
     return metadata_path
@@ -276,6 +311,125 @@ def _run_training_once(
     return RunResult(seed=seed, summary=summary, metadata=dict(run_metadata))
 
 
+def _resolve_interpret_runs(
+    cfg: DictConfig,
+    dataset_metadata: Mapping[str, object],
+    *,
+    seed: int,
+) -> List[dict[str, Any]]:
+    interpret_cfg = cfg.get("interpret")
+    if interpret_cfg is None:
+        return []
+
+    interpret_container = OmegaConf.to_container(interpret_cfg, resolve=True)
+    if not isinstance(interpret_container, Mapping):
+        return []
+
+    if not interpret_container.get("enabled", False):
+        return []
+
+    runs = interpret_container.get("runs") or []
+    if not isinstance(runs, list):
+        return []
+
+    defaults = {
+        "model_module": interpret_container.get("model_module"),
+        "model_factory": interpret_container.get("model_factory", "build_model"),
+        "output_dir": interpret_container.get("output_dir", "artifacts/interpretability"),
+        "device": interpret_container.get("device"),
+        "limit": interpret_container.get("limit"),
+        "seed": interpret_container.get("seed"),
+    }
+
+    resolved: List[dict[str, Any]] = []
+    dataset_pair = dataset_metadata.get("pair")
+    dataset_horizon = dataset_metadata.get("horizon")
+
+    for entry in runs:
+        if not isinstance(entry, Mapping):
+            continue
+
+        pair_filter = entry.get("pair")
+        if pair_filter is not None and str(pair_filter) != str(dataset_pair):
+            continue
+
+        horizon_filter = entry.get("horizon")
+        if horizon_filter is not None and str(horizon_filter) != str(dataset_horizon):
+            continue
+
+        events_path = entry.get("events")
+        if not events_path:
+            LOGGER.warning(
+                "Skipping interpret run without events path for pair=%s horizon=%s",
+                dataset_pair,
+                dataset_horizon,
+            )
+            continue
+
+        model_module = entry.get("model_module", defaults["model_module"])
+        if not model_module:
+            LOGGER.warning("Skipping interpret run for %s due to missing model_module", events_path)
+            continue
+
+        resolved.append(
+            {
+                "model_module": model_module,
+                "model_factory": entry.get("model_factory", defaults["model_factory"]),
+                "events": events_path,
+                "output_dir": entry.get("output_dir", defaults["output_dir"]),
+                "limit": entry.get("limit", defaults["limit"]),
+                "device": entry.get("device", defaults["device"]),
+                "seed": entry.get("seed", defaults["seed"]) or seed,
+            }
+        )
+
+    return resolved
+
+
+def _execute_interpret_runs(
+    cfg: DictConfig,
+    dataset_metadata: Mapping[str, object],
+    *,
+    seed: int,
+    original_cwd: Path,
+) -> None:
+    runs = _resolve_interpret_runs(cfg, dataset_metadata, seed=seed)
+    if not runs:
+        return
+
+    pair_value = dataset_metadata.get("pair")
+    horizon_value = dataset_metadata.get("horizon")
+
+    for run_cfg in runs:
+        events_path = Path(run_cfg["events"])
+        if not events_path.is_absolute():
+            events_path = original_cwd / events_path
+
+        output_dir = Path(run_cfg["output_dir"])
+        if not output_dir.is_absolute():
+            output_dir = original_cwd / output_dir
+
+        run_seed = int(run_cfg["seed"])
+        LOGGER.info(
+            "Running interpretability for pair=%s horizon=%s seed=%d using events %s",
+            pair_value,
+            horizon_value,
+            run_seed,
+            events_path,
+        )
+        run_interpret_command(
+            model_module=str(run_cfg["model_module"]),
+            model_factory=str(run_cfg["model_factory"]),
+            events_path=events_path,
+            output_dir=output_dir,
+            seed=run_seed,
+            limit=int(run_cfg["limit"]) if run_cfg.get("limit") is not None else None,
+            device=str(run_cfg["device"]) if run_cfg.get("device") is not None else None,
+            pair=str(pair_value) if pair_value is not None else None,
+            horizon=str(horizon_value) if horizon_value is not None else None,
+        )
+
+
 def _single_run(cfg: DictConfig) -> None:
     """Entry-point orchestrating a single training run."""
 
@@ -311,6 +465,13 @@ def _single_run(cfg: DictConfig) -> None:
             data_cfg=data_cfg,
         )
         _write_single_run_artifacts(output_dir, result)
+
+        _execute_interpret_runs(
+            cfg,
+            dataset_metadata,
+            seed=result.seed,
+            original_cwd=original_cwd,
+        )
 
         LOGGER.info("Best validation loss: %.4f", result.summary.best_val_loss)
         for epoch_idx, metrics in enumerate(result.summary.epochs, start=1):
@@ -393,7 +554,7 @@ def _multirun_entry(cfg: DictConfig) -> None:
         def _runner(seed: int, *, _dataset_key=dataset_key, _window=window) -> RunResult:
             cfg_copy = OmegaConf.create(OmegaConf.to_container(cfg, resolve=True))
             cfg_copy.seed = seed
-            return _run_training_once(
+            result = _run_training_once(
                 cfg_copy,
                 original_cwd,
                 base_metadata,
@@ -401,6 +562,17 @@ def _multirun_entry(cfg: DictConfig) -> None:
                 dataset=_window,
                 data_cfg=data_cfg,
             )
+            dataset_meta = dict(_window.metadata)
+            dataset_meta.setdefault("pair", _dataset_key[0])
+            dataset_meta.setdefault("horizon", _dataset_key[1])
+            dataset_meta.setdefault("window_id", _dataset_key[2])
+            _execute_interpret_runs(
+                cfg_copy,
+                dataset_meta,
+                seed=result.seed,
+                original_cwd=original_cwd,
+            )
+            return result
 
         LOGGER.info(
             "Launching multirun for pair=%s horizon=%s window=%s", *dataset_key
@@ -457,6 +629,8 @@ def main() -> None:  # pragma: no cover - thin argparse wrapper
         parser.add_argument("--seed", type=int, default=7, help="Seed for deterministic artefacts")
         parser.add_argument("--limit", type=int, help="Optional limit on the number of events to process")
         parser.add_argument("--device", help="Optional torch device for execution")
+        parser.add_argument("--pair", help="Optional currency pair label used for artefact routing")
+        parser.add_argument("--horizon", help="Optional horizon label used for artefact routing")
         args = parser.parse_args()
 
         run_interpret_command(
@@ -467,6 +641,8 @@ def main() -> None:  # pragma: no cover - thin argparse wrapper
             seed=args.seed,
             limit=args.limit,
             device=args.device,
+            pair=args.pair,
+            horizon=args.horizon,
         )
         return
 
