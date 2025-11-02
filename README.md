@@ -105,3 +105,16 @@ No code snippets, no screenshots. This is the operational spec you implement so 
 ---
 
 Implementing this framework removes the “maybe you got lucky” objection. Even if luck helped, the reporting standards here make luck irrelevant.
+
+## Continuous integration quickstart
+
+The automated CI workflow executes the following reproducibility checks:
+
+```
+make lint
+make typecheck
+make test
+make train-smoke
+```
+
+Run `make ci` locally to mirror the pipeline before opening a pull request.
