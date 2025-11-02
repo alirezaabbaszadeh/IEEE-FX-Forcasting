@@ -26,6 +26,7 @@ if TYPE_CHECKING:  # pragma: no cover - type checking only
     import torch
     from torch import nn
     from torch.utils.data import DataLoader
+    from src.analysis.benchmark import BenchmarkReport
 else:  # pragma: no cover - optional dependency handling
     try:
         import torch
@@ -60,6 +61,7 @@ class TrainingSummary:
     epochs: Iterable[EpochMetrics] = field(default_factory=list)
     best_val_loss: float = float("inf")
     device: str | None = None
+    benchmarks: dict[str, "BenchmarkReport"] = field(default_factory=dict)
 
 
 def _resolve_device(requested: str) -> torch.device:
@@ -185,4 +187,9 @@ def train(
             val_mae,
         )
 
-    return TrainingSummary(epochs=history, best_val_loss=best_val_loss, device=str(device))
+    return TrainingSummary(
+        epochs=history,
+        best_val_loss=best_val_loss,
+        device=str(device),
+        benchmarks={},
+    )

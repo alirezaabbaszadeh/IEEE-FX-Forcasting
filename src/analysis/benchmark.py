@@ -7,10 +7,16 @@ import logging
 import os
 import platform
 import time
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from itertools import islice
 from pathlib import Path
+from statistics import mean, stdev
 from typing import Callable, Iterable, Iterator, Mapping, Optional, Sequence, Tuple
+
+try:  # pragma: no cover - optional dependency for statistics when available
+    from statistics import fmean as _fmean
+except ImportError:  # pragma: no cover - Python < 3.8 fallback
+    _fmean = mean
 
 import torch
 from torch import Tensor, nn
@@ -40,8 +46,31 @@ class BenchmarkMetrics:
     measured_steps: int
     batch_size: int
     throughput_samples_per_sec: float
-    latency_ms: float
+    warmup_time_s: float
+    latency_mean_ms: float
+    latency_p50_ms: float
+    latency_p90_ms: float
+    latency_p95_ms: float
+    latency_p99_ms: float
+    latency_min_ms: float
+    latency_max_ms: float
+    latency_std_ms: float
+    latency_ms_samples: Tuple[float, ...]
     max_memory_mb: Optional[float]
+    cpu_rss_delta_mb: Optional[float]
+    cpu_rss_end_mb: Optional[float]
+
+
+@dataclass
+class BenchmarkSettings:
+    """Configuration used when capturing a benchmark."""
+
+    device: str
+    dataloader: Optional[str]
+    mode: str
+    warmup_steps: int
+    measured_steps: int
+    batch_size: int
 
 
 @dataclass
@@ -50,6 +79,15 @@ class BenchmarkReport:
 
     hardware: HardwareSpec
     metrics: BenchmarkMetrics
+    settings: BenchmarkSettings
+
+
+@dataclass
+class SavedReportPaths:
+    """Locations where benchmark artefacts were persisted."""
+
+    json_path: Path
+    csv_path: Path
 
 
 def _gather_hardware_spec(device: torch.device) -> HardwareSpec:
@@ -109,6 +147,17 @@ def _infer_batch_size(batch: Tensor) -> int:
     return int(batch.shape[0])
 
 
+def _percentile(values: Sequence[float], percentile: float) -> float:
+    if not values:
+        return float("nan")
+    ordered = sorted(values)
+    position = (len(ordered) - 1) * percentile
+    lower = int(position)
+    upper = min(len(ordered) - 1, lower + 1)
+    weight = position - lower
+    return ordered[lower] + (ordered[upper] - ordered[lower]) * weight
+
+
 def benchmark_model(
     model: nn.Module,
     dataloader: Iterable,
@@ -119,6 +168,7 @@ def benchmark_model(
     device: Optional[torch.device] = None,
     loss_fn: Optional[Callable[[Tensor, Tensor], Tensor]] = None,
     optimizer: Optional[Optimizer] = None,
+    dataloader_label: Optional[str] = None,
 ) -> BenchmarkReport:
     """Benchmark a model over an iterable of batches."""
 
@@ -128,13 +178,17 @@ def benchmark_model(
 
     training = mode == "training"
     model = model.to(device)
+    previous_mode = model.training
     model.train(training)
     if training and (loss_fn is None or optimizer is None):
         raise ValueError("Training benchmarks require both a loss function and an optimizer")
 
     iterator = _cycle(dataloader)
 
-    # Warm-up
+    if device.type == "cuda" and torch.cuda.is_available():
+        torch.cuda.synchronize(device)
+
+    warmup_start = time.perf_counter()
     for batch in islice(iterator, warmup_steps):
         inputs, targets = _prepare_batch(batch, device)
         if training:
@@ -150,9 +204,13 @@ def benchmark_model(
             with torch.no_grad():
                 model(inputs)
 
-    # Measurement
-    torch.cuda.empty_cache() if device.type == "cuda" else None
-    if device.type == "cuda":
+        if device.type == "cuda" and torch.cuda.is_available():
+            torch.cuda.synchronize(device)
+
+    warmup_time = time.perf_counter() - warmup_start
+
+    if device.type == "cuda" and torch.cuda.is_available():
+        torch.cuda.empty_cache()
         torch.cuda.reset_peak_memory_stats(device)
     try:  # pragma: no cover - optional dependency
         import psutil
@@ -164,12 +222,13 @@ def benchmark_model(
         start_rss = None
 
     total_samples = 0
-    start_time = time.perf_counter()
+    latencies_ms: list[float] = []
 
     for batch in islice(iterator, measure_steps):
         inputs, targets = _prepare_batch(batch, device)
         batch_size = _infer_batch_size(inputs)
         total_samples += batch_size
+        step_start = time.perf_counter()
         if training:
             assert loss_fn is not None and optimizer is not None
             if targets is None:
@@ -183,10 +242,12 @@ def benchmark_model(
             with torch.no_grad():
                 model(inputs)
 
-    elapsed = time.perf_counter() - start_time
+        if device.type == "cuda" and torch.cuda.is_available():
+            torch.cuda.synchronize(device)
 
-    max_memory_mb: Optional[float]
-    if device.type == "cuda":
+        latencies_ms.append((time.perf_counter() - step_start) * 1000)
+
+    if device.type == "cuda" and torch.cuda.is_available():
         max_memory_mb = torch.cuda.max_memory_allocated(device) / (1024**2)
     else:
         if process is not None and start_rss is not None:
@@ -194,42 +255,145 @@ def benchmark_model(
         else:
             max_memory_mb = None
 
-    throughput = total_samples / elapsed if elapsed > 0 else 0.0
-    latency_ms = (elapsed / measure_steps) * 1000 if measure_steps else 0.0
+    if process is not None and start_rss is not None:
+        end_rss = process.memory_info().rss
+        cpu_rss_delta_mb = max(end_rss - start_rss, 0) / (1024**2)
+        cpu_rss_end_mb = end_rss / (1024**2)
+    else:
+        cpu_rss_delta_mb = None
+        cpu_rss_end_mb = None
+
+    measured_batch_size = int(total_samples / measure_steps) if measure_steps else 0
+    total_elapsed_s = sum(latencies_ms) / 1000.0 if latencies_ms else 0.0
+    throughput = total_samples / total_elapsed_s if total_elapsed_s > 0 else 0.0
+
+    latency_mean = _fmean(latencies_ms) if latencies_ms else 0.0
+    latency_std = stdev(latencies_ms) if len(latencies_ms) > 1 else 0.0
+    latency_p50 = _percentile(latencies_ms, 0.5)
+    latency_p90 = _percentile(latencies_ms, 0.9)
+    latency_p95 = _percentile(latencies_ms, 0.95)
+    latency_p99 = _percentile(latencies_ms, 0.99)
+    latency_min = min(latencies_ms) if latencies_ms else 0.0
+    latency_max = max(latencies_ms) if latencies_ms else 0.0
 
     metrics = BenchmarkMetrics(
         mode=mode,
         warmup_steps=warmup_steps,
         measured_steps=measure_steps,
-        batch_size=int(total_samples / measure_steps) if measure_steps else 0,
+        batch_size=measured_batch_size,
         throughput_samples_per_sec=throughput,
-        latency_ms=latency_ms,
+        warmup_time_s=warmup_time,
+        latency_mean_ms=latency_mean,
+        latency_p50_ms=latency_p50,
+        latency_p90_ms=latency_p90,
+        latency_p95_ms=latency_p95,
+        latency_p99_ms=latency_p99,
+        latency_min_ms=latency_min,
+        latency_max_ms=latency_max,
+        latency_std_ms=latency_std,
+        latency_ms_samples=tuple(latencies_ms),
         max_memory_mb=max_memory_mb,
+        cpu_rss_delta_mb=cpu_rss_delta_mb,
+        cpu_rss_end_mb=cpu_rss_end_mb,
     )
     hardware = _gather_hardware_spec(device)
+    settings = BenchmarkSettings(
+        device=str(device),
+        dataloader=dataloader_label,
+        mode=mode,
+        warmup_steps=warmup_steps,
+        measured_steps=measure_steps,
+        batch_size=measured_batch_size,
+    )
     LOGGER.info(
         "Benchmark complete - mode: %s | throughput: %.2f samples/s | latency: %.2f ms",
         mode,
         throughput,
-        latency_ms,
+        latency_mean,
     )
-    return BenchmarkReport(hardware=hardware, metrics=metrics)
+    model.train(previous_mode)
+    return BenchmarkReport(hardware=hardware, metrics=metrics, settings=settings)
 
 
-def save_report(report: BenchmarkReport, output_dir: Path) -> Path:
-    """Persist a benchmark report to disk as JSON."""
+def save_report(report: BenchmarkReport, output_dir: Path, *, stem: str = "benchmark") -> SavedReportPaths:
+    """Persist a benchmark report to disk as JSON and CSV."""
 
+    import csv
     import json
 
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+
     payload = {
-        "hardware": report.hardware.__dict__,
-        "metrics": report.metrics.__dict__,
+        "hardware": asdict(report.hardware),
+        "metrics": asdict(report.metrics),
+        "settings": asdict(report.settings),
     }
-    path = output_dir / "benchmark.json"
-    path.write_text(json.dumps(payload, indent=2))
-    return path
+
+    json_path = output_dir / f"{stem}.json"
+    json_path.write_text(json.dumps(payload, indent=2))
+
+    csv_path = output_dir / f"{stem}.csv"
+    with csv_path.open("w", encoding="utf-8", newline="") as handle:
+        fieldnames = [
+            "mode",
+            "dataloader",
+            "warmup_steps",
+            "measured_steps",
+            "batch_size",
+            "warmup_time_s",
+            "throughput_samples_per_sec",
+            "latency_mean_ms",
+            "latency_p50_ms",
+            "latency_p90_ms",
+            "latency_p95_ms",
+            "latency_p99_ms",
+            "latency_min_ms",
+            "latency_max_ms",
+            "latency_std_ms",
+            "max_memory_mb",
+            "cpu_rss_delta_mb",
+            "cpu_rss_end_mb",
+            "hardware_device",
+            "hardware_cpu",
+            "hardware_cpu_count",
+            "hardware_memory_gb",
+            "hardware_gpu",
+            "hardware_cuda_capability",
+            "latency_ms_samples",
+        ]
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        row = {
+            "mode": report.metrics.mode,
+            "dataloader": report.settings.dataloader,
+            "warmup_steps": report.metrics.warmup_steps,
+            "measured_steps": report.metrics.measured_steps,
+            "batch_size": report.metrics.batch_size,
+            "warmup_time_s": report.metrics.warmup_time_s,
+            "throughput_samples_per_sec": report.metrics.throughput_samples_per_sec,
+            "latency_mean_ms": report.metrics.latency_mean_ms,
+            "latency_p50_ms": report.metrics.latency_p50_ms,
+            "latency_p90_ms": report.metrics.latency_p90_ms,
+            "latency_p95_ms": report.metrics.latency_p95_ms,
+            "latency_p99_ms": report.metrics.latency_p99_ms,
+            "latency_min_ms": report.metrics.latency_min_ms,
+            "latency_max_ms": report.metrics.latency_max_ms,
+            "latency_std_ms": report.metrics.latency_std_ms,
+            "max_memory_mb": report.metrics.max_memory_mb,
+            "cpu_rss_delta_mb": report.metrics.cpu_rss_delta_mb,
+            "cpu_rss_end_mb": report.metrics.cpu_rss_end_mb,
+            "hardware_device": report.hardware.device,
+            "hardware_cpu": report.hardware.cpu,
+            "hardware_cpu_count": report.hardware.cpu_count,
+            "hardware_memory_gb": report.hardware.memory_gb,
+            "hardware_gpu": report.hardware.gpu,
+            "hardware_cuda_capability": report.hardware.cuda_capability,
+            "latency_ms_samples": " ".join(f"{value:.6f}" for value in report.metrics.latency_ms_samples),
+        }
+        writer.writerow(row)
+
+    return SavedReportPaths(json_path=json_path, csv_path=csv_path)
 
 
 if __name__ == "__main__":  # pragma: no cover - convenience CLI
@@ -265,5 +429,5 @@ if __name__ == "__main__":  # pragma: no cover - convenience CLI
         loss_fn=loss_fn,
         optimizer=optimizer if args.mode == "training" else None,
     )
-    save_path = save_report(report, args.output)
-    LOGGER.info("Benchmark report saved to %s", save_path)
+    paths = save_report(report, args.output)
+    LOGGER.info("Benchmark report saved to %s", paths.json_path)
