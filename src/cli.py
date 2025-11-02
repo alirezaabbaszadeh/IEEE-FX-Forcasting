@@ -12,6 +12,7 @@ from typing import Any, Iterable, List, Mapping, Optional, Tuple
 import hydra
 import pandas as pd
 import torch
+from torch import nn
 from hydra.utils import get_original_cwd
 from omegaconf import DictConfig, OmegaConf
 
@@ -37,6 +38,32 @@ from src.utils.repro import (
 )
 
 LOGGER = logging.getLogger(__name__)
+
+
+_BENCHMARK_MODE: str | None = None
+_BENCHMARK_PRESETS: dict[str, dict[str, int]] = {
+    "smoke": {
+        "train_warmup": 1,
+        "train_steps": 3,
+        "inference_warmup": 1,
+        "inference_steps": 5,
+    },
+    "full": {
+        "train_warmup": 5,
+        "train_steps": 20,
+        "inference_warmup": 5,
+        "inference_steps": 50,
+    },
+}
+
+
+def _set_benchmark_mode(mode: str | None) -> None:
+    global _BENCHMARK_MODE
+    _BENCHMARK_MODE = mode
+
+
+def _get_benchmark_mode() -> str | None:
+    return _BENCHMARK_MODE
 
 
 def _slugify(value: str) -> str:
@@ -133,6 +160,83 @@ def _prepare_metadata(cfg: DictConfig) -> dict[str, object]:
         "git_sha": get_git_revision(),
         "hardware": get_hardware_snapshot(),
     }
+
+
+def _run_post_training_benchmarks(
+    model: nn.Module,
+    dataloaders: Mapping[str, object],
+    trainer_cfg: TrainerConfig,
+    *,
+    mode: str,
+) -> dict[str, "BenchmarkReport"]:
+    try:
+        from src.analysis import BenchmarkReport, benchmark_model
+    except ImportError:  # pragma: no cover - optional dependency
+        LOGGER.warning("Skipping benchmarking because analysis utilities are unavailable")
+        return {}
+
+    presets = _BENCHMARK_PRESETS.get(mode)
+    if presets is None:
+        LOGGER.warning("Unknown benchmarking mode '%s' - skipping", mode)
+        return {}
+
+    device = next(model.parameters()).device
+    reports: dict[str, BenchmarkReport] = {}
+
+    train_loader = dataloaders.get("train")
+    if train_loader is not None and presets.get("train_steps", 0) > 0:
+        dataset = getattr(train_loader, "dataset", None)
+        length = len(dataset) if hasattr(dataset, "__len__") else None
+        if length is None or length > 0:
+            LOGGER.info("Running training benchmark (%s mode)", mode)
+            optimizer = torch.optim.AdamW(
+                model.parameters(),
+                lr=trainer_cfg.learning_rate,
+                weight_decay=trainer_cfg.weight_decay,
+            )
+            loss_fn = nn.MSELoss()
+            snapshot = {name: tensor.detach().clone() for name, tensor in model.state_dict().items()}
+            report = benchmark_model(
+                model,
+                train_loader,
+                mode="training",
+                warmup_steps=presets.get("train_warmup", 0),
+                measure_steps=presets.get("train_steps", 0),
+                device=device,
+                loss_fn=loss_fn,
+                optimizer=optimizer,
+                dataloader_label="train",
+            )
+            reports["train_training"] = report
+            model.load_state_dict(snapshot)
+            for parameter in model.parameters():
+                parameter.grad = None
+
+    inference_steps = presets.get("inference_steps", 0)
+    if inference_steps <= 0:
+        return reports
+
+    for split in ("val", "test"):
+        loader = dataloaders.get(split)
+        if loader is None:
+            continue
+        dataset = getattr(loader, "dataset", None)
+        length = len(dataset) if hasattr(dataset, "__len__") else None
+        if length is not None and length == 0:
+            continue
+        LOGGER.info("Running inference benchmark on %s split (%s mode)", split, mode)
+        report = benchmark_model(
+            model,
+            loader,
+            mode="inference",
+            warmup_steps=presets.get("inference_warmup", 0),
+            measure_steps=inference_steps,
+            device=device,
+            dataloader_label=split,
+        )
+        reports[f"{split}_inference"] = report
+
+    return reports
 
 
 def _summarise_training(summary: TrainingSummary) -> dict[str, float]:
@@ -307,6 +411,18 @@ def _run_training_once(
 
     trainer_cfg = _build_trainer_config(cfg.training)
     summary = train(model, dataloaders, trainer_cfg, metadata=dict(run_metadata))
+
+    benchmark_mode = _get_benchmark_mode()
+    if benchmark_mode:
+        LOGGER.info("Benchmarking enabled (%s mode)", benchmark_mode)
+        benchmark_reports = _run_post_training_benchmarks(
+            model,
+            dataloaders,
+            trainer_cfg,
+            mode=benchmark_mode,
+        )
+        if benchmark_reports:
+            summary.benchmarks.update(benchmark_reports)
 
     return RunResult(seed=seed, summary=summary, metadata=dict(run_metadata))
 
@@ -520,6 +636,16 @@ def _write_single_run_artifacts(output_dir: Path, result: RunResult) -> None:
     with (output_dir / "metadata.json").open("w", encoding="utf-8") as handle:
         json.dump(metadata, handle, indent=2, sort_keys=True)
 
+    if getattr(result.summary, "benchmarks", None):
+        try:
+            from src.analysis import save_report
+        except ImportError:  # pragma: no cover - optional dependency
+            LOGGER.warning("Benchmarks collected but analysis utilities unavailable; skipping save")
+        else:
+            benchmarks_dir = output_dir / "benchmarks"
+            for name, report in result.summary.benchmarks.items():
+                save_report(report, benchmarks_dir, stem=name)
+
     LOGGER.info("Persisted training artifacts to %s", output_dir)
 
 
@@ -648,7 +774,26 @@ def main() -> None:  # pragma: no cover - thin argparse wrapper
 
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--multirun", action="store_true", help="launch repeated runs across seeds")
+    parser.add_argument(
+        "--benchmark-smoke",
+        action="store_true",
+        help="capture lightweight training/inference benchmarks after training",
+    )
+    parser.add_argument(
+        "--benchmark-full",
+        action="store_true",
+        help="capture extended training/inference benchmarks after training",
+    )
     args, remaining = parser.parse_known_args()
+
+    if args.benchmark_smoke and args.benchmark_full:
+        raise SystemExit("--benchmark-smoke and --benchmark-full cannot be used together")
+    if args.benchmark_smoke:
+        _set_benchmark_mode("smoke")
+    elif args.benchmark_full:
+        _set_benchmark_mode("full")
+    else:
+        _set_benchmark_mode(None)
 
     sys.argv = [sys.argv[0]] + remaining
     if args.multirun:

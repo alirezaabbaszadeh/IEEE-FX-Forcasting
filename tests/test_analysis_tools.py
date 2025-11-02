@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pandas as pd
-import torch
-from torch import nn
-from torch.utils.data import DataLoader, TensorDataset
+import pytest
+
+pd = pytest.importorskip("pandas")
+torch = pytest.importorskip("torch")
+from torch import nn  # type: ignore # noqa: E402
+from torch.utils.data import DataLoader, TensorDataset  # type: ignore # noqa: E402
 
 from src.analysis import (
     BenchmarkReport,
@@ -79,8 +81,9 @@ def test_benchmark_and_reporting(tmp_path: Path) -> None:
     assert report.metrics.throughput_samples_per_sec > 0
     assert report.hardware.device
 
-    report_path = save_report(report, tmp_path / "benchmarks")
-    assert report_path.exists()
+    report_paths = save_report(report, tmp_path / "benchmarks")
+    assert report_paths.json_path.exists()
+    assert report_paths.csv_path.exists()
 
     metrics_path = Path("artifacts/examples/metrics.csv")
     outputs = export_tables([metrics_path], tmp_path / "tables")

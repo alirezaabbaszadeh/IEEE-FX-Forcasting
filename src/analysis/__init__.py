@@ -5,7 +5,15 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:  # pragma: no cover - import convenience for type checkers
-    from .benchmark import BenchmarkMetrics, BenchmarkReport, HardwareSpec, benchmark_model, save_report
+    from .benchmark import (
+        BenchmarkMetrics,
+        BenchmarkReport,
+        BenchmarkSettings,
+        HardwareSpec,
+        SavedReportPaths,
+        benchmark_model,
+        save_report,
+    )
     from .hparam import plot_response_curves
     from .interpretability import (
         AttentionHeatmapResult,
@@ -21,9 +29,17 @@ if TYPE_CHECKING:  # pragma: no cover - import convenience for type checkers
     from .stats import StatisticalAnalyzer
 else:  # pragma: no cover - optional dependencies may be absent at runtime
     try:
-        from .benchmark import BenchmarkMetrics, BenchmarkReport, HardwareSpec, benchmark_model, save_report
+        from .benchmark import (
+            BenchmarkMetrics,
+            BenchmarkReport,
+            BenchmarkSettings,
+            HardwareSpec,
+            SavedReportPaths,
+            benchmark_model,
+            save_report,
+        )
     except ModuleNotFoundError:  # pragma: no cover - optional dependency
-        BenchmarkMetrics = BenchmarkReport = HardwareSpec = None  # type: ignore[assignment]
+        BenchmarkMetrics = BenchmarkReport = BenchmarkSettings = HardwareSpec = SavedReportPaths = None  # type: ignore[assignment]
 
         def benchmark_model(*args, **kwargs):  # type: ignore[no-redef]
             raise ImportError("Torch is required to use benchmark_model")
@@ -70,7 +86,9 @@ __all__ = [
     "AttributionResult",
     "BenchmarkMetrics",
     "BenchmarkReport",
+    "BenchmarkSettings",
     "HardwareSpec",
+    "SavedReportPaths",
     "ExpertTraceResult",
     "MarketEvent",
     "MarketEventArtifactSummary",

@@ -4,6 +4,10 @@ from pathlib import Path
 
 import pytest
 
+torch = pytest.importorskip("torch")
+from torch import nn  # type: ignore # noqa: E402
+from torch.utils.data import DataLoader, TensorDataset  # type: ignore # noqa: E402
+
 from scripts.benchmark import (
     BenchmarkResult,
     BenchmarkThresholds,
@@ -13,6 +17,7 @@ from scripts.benchmark import (
     enforce_thresholds,
     run_benchmark,
 )
+from src.analysis.benchmark import benchmark_model, save_report
 
 
 def test_capture_environment_lockfiles_creates_expected_files(tmp_path: Path) -> None:
@@ -120,3 +125,59 @@ def test_run_benchmark_produces_verifiable_metrics(tmp_path: Path) -> None:
             max_inference_latency_ms=200.0,
         ),
     )
+
+
+def test_benchmark_model_records_latency_percentiles(tmp_path: Path) -> None:
+    torch.manual_seed(0)
+    dataset = TensorDataset(torch.randn(24, 4), torch.randn(24, 1))
+    dataloader = DataLoader(dataset, batch_size=8)
+    model = nn.Sequential(nn.Linear(4, 16), nn.ReLU(), nn.Linear(16, 1))
+
+    report = benchmark_model(
+        model,
+        dataloader,
+        warmup_steps=1,
+        measure_steps=3,
+        dataloader_label="val",
+    )
+
+    metrics = report.metrics
+    assert metrics.latency_ms_samples
+    assert len(metrics.latency_ms_samples) == 3
+    assert metrics.latency_p95_ms >= metrics.latency_p50_ms
+    assert metrics.latency_max_ms >= metrics.latency_min_ms
+    assert metrics.warmup_time_s >= 0
+    assert metrics.throughput_samples_per_sec > 0
+    assert report.settings.dataloader == "val"
+
+    paths = save_report(report, tmp_path / "benchmarks", stem="inference")
+    assert paths.json_path.exists()
+    assert paths.csv_path.exists()
+
+
+def test_benchmark_model_training_mode_tracks_memory() -> None:
+    torch.manual_seed(0)
+    dataset = TensorDataset(torch.randn(16, 4), torch.randn(16, 1))
+    dataloader = DataLoader(dataset, batch_size=4)
+    model = nn.Sequential(nn.Linear(4, 8), nn.ReLU(), nn.Linear(8, 1))
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
+    loss_fn = nn.MSELoss()
+
+    report = benchmark_model(
+        model,
+        dataloader,
+        mode="training",
+        warmup_steps=0,
+        measure_steps=2,
+        loss_fn=loss_fn,
+        optimizer=optimizer,
+        dataloader_label="train",
+    )
+
+    metrics = report.metrics
+    assert metrics.latency_mean_ms > 0
+    assert metrics.latency_std_ms >= 0
+    if metrics.cpu_rss_delta_mb is not None:
+        assert metrics.cpu_rss_delta_mb >= 0
+    assert report.settings.mode == "training"
+    assert report.settings.dataloader == "train"
