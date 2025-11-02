@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 
 from src.analysis import StatisticalAnalyzer
 from src.experiments import HyperparameterSearch, MultiRunExperiment
@@ -76,7 +77,7 @@ def test_hyperparameter_search_stub(tmp_path: Path) -> None:
     }
 
     search = HyperparameterSearch(
-        runner=runner,
+        runner,
         base_config=base_config,
         search_space=search_space,
         metric="val_score",
@@ -87,5 +88,74 @@ def test_hyperparameter_search_stub(tmp_path: Path) -> None:
 
     result = search.optimize(n_trials=3, sampler="sobol")
     assert "best_value" in result
-    assert (tmp_path / "search_case" / "search_results.csv").exists()
+    expected_root = tmp_path / "hparam" / "search_case"
+    assert result["results_path"] == expected_root / "search_results.csv"
+    assert result["results_path"].exists()
+    assert all(path.exists() for path in result.get("plot_paths", []))
+    assert all(path.exists() for path in result.get("summary_paths", []))
+
+
+def test_hyperparameter_search_persists_multi_run_artifacts(tmp_path: Path) -> None:
+    def _categorical_run(config):
+        base = config.get("base", 0.0)
+        category = config.get("category", "low")
+        adjustment = 0.05 if category == "high" else -0.02
+        rng = np.random.default_rng(config["seed"])
+        value = float(base + adjustment + rng.normal(scale=0.001))
+        return {"metrics": {"val_score": value}}
+
+    search = HyperparameterSearch(
+        _categorical_run,
+        base_config={"base": 0.45, "category": "low"},
+        search_space={
+            "base": {"type": "float", "low": 0.4, "high": 0.6},
+            "category": {"type": "categorical", "choices": ["low", "high"]},
+        },
+        metric="val_score",
+        run_id="combo",
+        output_dir=tmp_path,
+        direction="maximize",
+        num_runs=5,
+        base_seed=13,
+        top_k=2,
+    )
+
+    result = search.optimize(n_trials=4, sampler="sobol")
+
+    artifact_root = tmp_path / "hparam" / "combo"
+    assert result["results_path"] == artifact_root / "search_results.csv"
+
+    results_df = pd.read_csv(result["results_path"])
+    assert "val_score_mean" in results_df.columns
+    assert "base" in results_df.columns
+    assert "category" in results_df.columns
+    assert "config_hash" in results_df.columns
+    assert not results_df["config_hash"].isna().any()
+
+    assert len(result["records"]) == 4
+    for record in result["records"]:
+        assert "aggregate" in record
+        assert "val_score" in record["aggregate"]
+        assert record["aggregate"]["val_score"]["n"] == 5
+
+    assert len(result["plot_paths"]) == 2
+    assert len(result["summary_paths"]) == 2
+    for path in [*result["plot_paths"], *result["summary_paths"]]:
+        assert path.exists()
+
+    trials_dir = artifact_root / "trials"
+    trial_files = sorted(trials_dir.glob("*.json"))
+    assert len(trial_files) == 4
+    for payload_path in trial_files:
+        payload = json.loads(payload_path.read_text())
+        assert "config_hash" in payload
+        assert len(payload["seeds"]) == 5
+        assert payload["aggregate"]["val_score"]["n"] == 5
+
+    top_payload = json.loads((artifact_root / "top_trials.json").read_text())
+    assert top_payload
+    for entry in top_payload:
+        assert "config_hash" in entry
+        assert "aggregate" in entry
+        assert entry["aggregate"]["val_score"]["n"] == 5
 
