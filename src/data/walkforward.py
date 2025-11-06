@@ -11,7 +11,7 @@ import pandas as pd
 import pytz
 from sklearn.preprocessing import StandardScaler
 
-from src.data.dataset import DataConfig, SequenceDataset, WindowedData
+from src.data.dataset import DataConfig, PartitionSeries, SequenceDataset, WindowedData
 from src.splits.walk_forward import (
     WalkForwardConfig,
     WalkForwardSplit,
@@ -167,7 +167,7 @@ class WalkForwardSplitter:
             feature_scaler = StandardScaler().fit(train_df.loc[:, feature_columns])
             target_scaler = StandardScaler().fit(train_df[[target_column]])
 
-            train_dataset = self._build_partition_dataset(
+            train_dataset, train_series = self._build_partition_dataset(
                 train_df,
                 feature_scaler,
                 target_scaler,
@@ -175,7 +175,7 @@ class WalkForwardSplitter:
                 horizon_td,
                 partition_name="train",
             )
-            val_dataset = self._build_partition_dataset(
+            val_dataset, val_series = self._build_partition_dataset(
                 val_df,
                 feature_scaler,
                 target_scaler,
@@ -183,7 +183,7 @@ class WalkForwardSplitter:
                 horizon_td,
                 partition_name="val",
             )
-            test_dataset = self._build_partition_dataset(
+            test_dataset, test_series = self._build_partition_dataset(
                 test_df,
                 feature_scaler,
                 target_scaler,
@@ -225,6 +225,9 @@ class WalkForwardSplitter:
                 feature_scaler=feature_scaler,
                 target_scaler=target_scaler,
                 metadata=metadata,
+                train_series=train_series,
+                val_series=val_series,
+                test_series=test_series,
             )
 
         return outputs
@@ -238,16 +241,21 @@ class WalkForwardSplitter:
         horizon_td: pd.Timedelta,
         *,
         partition_name: str,
-    ) -> SequenceDataset:
+    ) -> tuple[SequenceDataset, PartitionSeries]:
         feature_columns = list(self.cfg.feature_columns)
         target_column = self.cfg.target_column
 
         if df.empty:
             num_features = len(feature_columns)
-            return SequenceDataset(
-                np.empty((0, self.cfg.time_steps, num_features), dtype=np.float32),
-                np.empty((0, 1), dtype=np.float32),
+            empty_sequences = np.empty((0, self.cfg.time_steps, num_features), dtype=np.float32)
+            empty_targets = np.empty((0, 1), dtype=np.float32)
+            dataset = SequenceDataset(empty_sequences, empty_targets)
+            series = PartitionSeries(
+                features=np.empty((0, num_features), dtype=np.float32),
+                targets=np.empty((0,), dtype=np.float32),
+                sequence_targets=np.empty((0,), dtype=np.float32),
             )
+            return dataset, series
 
         self._validate_partition_timestamps(
             df.index, horizon_steps, horizon_td, partition_name
@@ -257,7 +265,13 @@ class WalkForwardSplitter:
         scaled_targets = target_scaler.transform(df[[target_column]]).astype(np.float32).reshape(-1)
 
         sequences, targets = self._create_sequences(scaled_features, scaled_targets, horizon_steps)
-        return SequenceDataset(sequences, targets)
+        dataset = SequenceDataset(sequences, targets)
+        series = PartitionSeries(
+            features=scaled_features,
+            targets=scaled_targets,
+            sequence_targets=targets.reshape(-1),
+        )
+        return dataset, series
 
     def _validate_partition_timestamps(
         self,

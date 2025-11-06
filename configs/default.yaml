@@ -37,6 +37,7 @@ data:
     embargo: 8
 
 model:
+  name: temporal_transformer
   hidden_size: 128
   conv_kernel_size: 3
   num_blocks: 2

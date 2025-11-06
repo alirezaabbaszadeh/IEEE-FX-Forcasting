@@ -162,6 +162,75 @@ def _build_model_config(cfg: DictConfig, input_features: int, time_steps: int) -
     )
 
 
+def _build_light_lstm_config(cfg: DictConfig, input_features: int, time_steps: int):
+    from src.models.deep.light_lstm import LightLSTMConfig
+
+    return LightLSTMConfig(
+        input_features=input_features,
+        time_steps=time_steps,
+        hidden_size=int(cfg.get("hidden_size", 64)),
+        num_layers=int(cfg.get("num_layers", 1)),
+        dropout=float(cfg.get("dropout", 0.1)),
+        bidirectional=bool(cfg.get("bidirectional", False)),
+    )
+
+
+def _to_optional_tuple(values: object, expected_len: int) -> tuple[int, ...] | None:
+    if values in (None, "null"):
+        return None
+    iterable = list(values)
+    if len(iterable) != expected_len:
+        raise ValueError(f"Expected sequence of length {expected_len}, received {iterable}")
+    return tuple(int(v) for v in iterable)
+
+
+def _normalise_optional_str(value: object | None) -> str | None:
+    if value in (None, "null"):
+        return None
+    text = str(value)
+    return text if text else None
+
+
+def _build_arima_config(cfg: DictConfig):
+    from src.models.classical import ArimaConfig
+
+    order = tuple(int(v) for v in list(cfg.get("order", (1, 1, 0))))
+    seasonal_order = _to_optional_tuple(cfg.get("seasonal_order"), 4)
+    method = _normalise_optional_str(cfg.get("method"))
+    maxiter = cfg.get("maxiter")
+    maxiter_val = None if maxiter in (None, "null") else int(maxiter)
+    return ArimaConfig(
+        order=order,
+        seasonal_order=seasonal_order,
+        trend=_normalise_optional_str(cfg.get("trend")),
+        enforce_stationarity=bool(cfg.get("enforce_stationarity", True)),
+        enforce_invertibility=bool(cfg.get("enforce_invertibility", True)),
+        method=method,
+        maxiter=maxiter_val,
+    )
+
+
+def _build_ets_config(cfg: DictConfig):
+    from src.models.classical import ETSConfig
+
+    seasonal_periods = cfg.get("seasonal_periods")
+    periods_val = None if seasonal_periods in (None, "null") else int(seasonal_periods)
+    use_boxcox = cfg.get("use_boxcox")
+    if isinstance(use_boxcox, str) and use_boxcox.lower() == "none":
+        use_boxcox_val: float | bool | None = None
+    else:
+        use_boxcox_val = use_boxcox  # type: ignore[assignment]
+
+    return ETSConfig(
+        trend=_normalise_optional_str(cfg.get("trend", "add")),
+        damped_trend=bool(cfg.get("damped_trend", False)),
+        seasonal=_normalise_optional_str(cfg.get("seasonal")),
+        seasonal_periods=periods_val,
+        use_boxcox=use_boxcox_val,
+        initialization_method=str(cfg.get("initialization_method", "estimated")),
+    )
+
+
 def _build_trainer_config(cfg: DictConfig) -> TrainerConfig:
     return TrainerConfig(
         epochs=cfg.epochs,
@@ -432,24 +501,70 @@ def _run_training_once(
         },
     )
 
-    model_cfg = _build_model_config(
-        cfg.model,
-        len(data_cfg_obj.feature_columns),
-        data_cfg_obj.time_steps,
-    )
-    model = TemporalForecastingModel(model_cfg)
+    model_name = str(cfg.model.get("name", "temporal_transformer")).lower()
+    lookback = data_cfg_obj.time_steps
+    raw_horizon_steps = selected_window.metadata.get("horizon_steps")
+    try:
+        horizon_steps = int(raw_horizon_steps)
+    except (TypeError, ValueError):
+        horizon_steps = 1
 
-    trainer_cfg = _build_trainer_config(cfg.training)
-    summary = train(
-        model,
-        dataloaders,
-        trainer_cfg,
-        metadata=dict(run_metadata),
-        manifest_path=manifest_path,
-    )
+    model = None
+    trainer_cfg = None
+    baseline_metrics: dict[str, object] | None = None
+    summary: TrainingSummary | None = None
+
+    if model_name in {"temporal_transformer", "transformer", "temporalforecastingmodel"}:
+        model_cfg = _build_model_config(
+            cfg.model,
+            len(data_cfg_obj.feature_columns),
+            lookback,
+        )
+        model = TemporalForecastingModel(model_cfg)
+    elif model_name == "lstm_light":
+        from src.models.deep.light_lstm import LightLSTMModel
+
+        lstm_cfg = _build_light_lstm_config(
+            cfg.model,
+            len(data_cfg_obj.feature_columns),
+            lookback,
+        )
+        model = LightLSTMModel(lstm_cfg)
+    elif model_name == "arima":
+        from src.models.classical import run_arima_baseline
+
+        arima_cfg = _build_arima_config(cfg.model)
+        summary, baseline_metrics = run_arima_baseline(
+            selected_window,
+            lookback=lookback,
+            horizon_steps=horizon_steps,
+            config=arima_cfg,
+        )
+    elif model_name == "ets":
+        from src.models.classical import run_ets_baseline
+
+        ets_cfg = _build_ets_config(cfg.model)
+        summary, baseline_metrics = run_ets_baseline(
+            selected_window,
+            lookback=lookback,
+            horizon_steps=horizon_steps,
+            config=ets_cfg,
+        )
+    else:
+        raise ValueError(f"Unsupported model baseline: {model_name}")
+
+    if model is not None:
+        trainer_cfg = _build_trainer_config(cfg.training)
+        summary = train(
+            model,
+            dataloaders,
+            trainer_cfg,
+            metadata=dict(run_metadata),
+            manifest_path=manifest_path,
+        )
 
     benchmark_mode = _get_benchmark_mode()
-    if benchmark_mode:
+    if benchmark_mode and model is not None and trainer_cfg is not None:
         LOGGER.info("Benchmarking enabled (%s mode)", benchmark_mode)
         benchmark_reports = _run_post_training_benchmarks(
             model,
@@ -459,6 +574,13 @@ def _run_training_once(
         )
         if benchmark_reports:
             summary.benchmarks.update(benchmark_reports)
+
+    if summary is None:
+        raise RuntimeError("Training summary was not produced for model run")
+
+    if baseline_metrics:
+        LOGGER.info("Baseline metrics (scaled targets): %s", baseline_metrics)
+        run_metadata.setdefault("baseline_metrics", baseline_metrics)
 
     return RunResult(seed=seed, summary=summary, metadata=dict(run_metadata))
 

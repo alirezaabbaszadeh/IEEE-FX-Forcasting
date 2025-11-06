@@ -1,0 +1,16 @@
+# @package _global_
+
+model:
+  name: lstm_light
+  hidden_size: 128
+  num_layers: 1
+  dropout: 0.1
+  bidirectional: false
+
+training:
+  epochs: 2
+  learning_rate: 0.001
+  weight_decay: 0.0
+  grad_clip: null
+  log_interval: 10
+  device: auto

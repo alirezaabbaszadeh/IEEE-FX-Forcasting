@@ -7,3 +7,17 @@ num_blocks: ???
 attention_heads: ???
 lstm_hidden_size: ???
 dropout: ???
+num_layers: null
+bidirectional: null
+order: null
+seasonal_order: null
+trend: null
+enforce_stationarity: null
+enforce_invertibility: null
+method: null
+maxiter: null
+damped_trend: null
+seasonal: null
+seasonal_periods: null
+use_boxcox: null
+initialization_method: null
