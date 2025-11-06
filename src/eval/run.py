@@ -11,6 +11,7 @@ import numpy as np
 import pandas as pd
 
 from src.analysis.stats import analyze_dm_cache
+from src.metrics.point import point_metrics
 
 LOGGER = logging.getLogger(__name__)
 
@@ -56,13 +57,10 @@ def _directional_accuracy(y_true: np.ndarray, y_pred: np.ndarray) -> float:
     return float(np.mean(signs_true == signs_pred))
 
 
-def _base_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict[str, float]:
-    errors = y_pred - y_true
-    mae = float(np.mean(np.abs(errors)))
-    rmse = float(np.sqrt(np.mean(np.square(errors))))
-    mape = float(np.mean(np.abs(errors) / np.maximum(np.abs(y_true), 1e-8)))
-    da = _directional_accuracy(y_true, y_pred)
-    return {"mae": mae, "rmse": rmse, "mape": mape, "directional_accuracy": da}
+def _compute_point_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict[str, float]:
+    metrics = point_metrics(y_true, y_pred)
+    metrics["directional_accuracy"] = _directional_accuracy(y_true, y_pred)
+    return metrics
 
 
 def _volatility_regime_labels(values: np.ndarray) -> np.ndarray:
@@ -139,7 +137,7 @@ def aggregate_metrics(predictions: pd.DataFrame, session_timezone: str = "UTC") 
     for (pair, horizon, model), group in grouped:
         y_true = group["y_true"].to_numpy()
         y_pred = group["y_pred"].to_numpy()
-        metrics = _base_metrics(y_true, y_pred)
+        metrics = _compute_point_metrics(y_true, y_pred)
         for metric_name, value in metrics.items():
             records.append(
                 {
@@ -153,6 +151,24 @@ def aggregate_metrics(predictions: pd.DataFrame, session_timezone: str = "UTC") 
                     "count": len(group),
                 }
             )
+        if "fold" in group.columns:
+            for fold_value, fold_frame in group.groupby("fold", sort=False):
+                fold_metrics = _compute_point_metrics(
+                    fold_frame["y_true"].to_numpy(), fold_frame["y_pred"].to_numpy()
+                )
+                for metric_name, value in fold_metrics.items():
+                    records.append(
+                        {
+                            "pair": pair,
+                            "horizon": horizon,
+                            "model": model,
+                            "group": "fold",
+                            "segment": str(fold_value),
+                            "metric": metric_name,
+                            "value": value,
+                            "count": len(fold_frame),
+                        }
+                    )
         gating_entropy = _compute_gating_entropy(group)
         if gating_entropy is not None and gating_entropy.size:
             volatility = np.abs(y_true)
@@ -194,7 +210,7 @@ def aggregate_metrics(predictions: pd.DataFrame, session_timezone: str = "UTC") 
             regimes = _volatility_regime_labels(group["y_true"].to_numpy())
             for regime in np.unique(regimes):
                 mask = regimes == regime
-                regime_metrics = _base_metrics(
+                regime_metrics = _compute_point_metrics(
                     group.loc[mask, "y_true"].to_numpy(),
                     group.loc[mask, "y_pred"].to_numpy(),
                 )
@@ -214,7 +230,7 @@ def aggregate_metrics(predictions: pd.DataFrame, session_timezone: str = "UTC") 
         sessions = _session_labels(group["session_ts"])
         for session in np.unique(sessions):
             mask = sessions == session
-            session_metrics = _base_metrics(
+            session_metrics = _compute_point_metrics(
                 group.loc[mask, "y_true"].to_numpy(),
                 group.loc[mask, "y_pred"].to_numpy(),
             )

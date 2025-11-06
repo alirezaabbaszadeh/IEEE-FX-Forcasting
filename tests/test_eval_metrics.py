@@ -66,3 +66,32 @@ def test_aggregate_metrics_dm_cache_structure():
     sample_row = dm_cache.iloc[0]
     assert abs(sample_row["error"]) == pytest.approx(abs(sample_row["y_pred"] - sample_row["y_true"]))
     assert sample_row["squared_error"] == pytest.approx(sample_row["error"] ** 2)
+
+
+def test_aggregate_metrics_includes_fold_breakdown():
+    frame = pd.DataFrame(
+        {
+            "pair": ["EURUSD"] * 6,
+            "horizon": ["1h"] * 6,
+            "model": ["baseline"] * 6,
+            "timestamp": [
+                "2023-01-01T00:00:00Z",
+                "2023-01-01T01:00:00Z",
+                "2023-01-01T02:00:00Z",
+                "2023-01-02T00:00:00Z",
+                "2023-01-02T01:00:00Z",
+                "2023-01-02T02:00:00Z",
+            ],
+            "fold": [0, 0, 0, 1, 1, 1],
+            "y_true": [0.1, -0.2, 0.0, 0.05, -0.1, 0.2],
+            "y_pred": [0.12, -0.22, 0.03, 0.01, -0.08, 0.18],
+        }
+    )
+
+    metrics = aggregate_metrics(frame)
+
+    fold_rows = metrics[metrics["group"] == "fold"]
+    assert not fold_rows.empty
+    assert set(fold_rows["segment"]) == {"0", "1"}
+    expected_metrics = {"mae", "rmse", "smape", "mase", "directional_accuracy"}
+    assert expected_metrics.issubset(set(fold_rows["metric"]))
