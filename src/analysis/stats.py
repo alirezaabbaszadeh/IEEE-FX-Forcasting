@@ -7,10 +7,11 @@ import re
 from dataclasses import dataclass
 from itertools import combinations
 from pathlib import Path
-from statistics import NormalDist
 from typing import Dict, List, Mapping, Sequence, Tuple
 
 import logging
+
+from statistics import NormalDist
 
 import matplotlib
 
@@ -18,6 +19,10 @@ matplotlib.use("Agg", force=True)  # pragma: no cover - headless execution
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+
+from src.stats.dm import construct_dm_comparisons, diebold_mariano
+from src.stats.mcs import hansen_model_confidence_set
+from src.stats.utils import rng_from_state
 
 LOGGER = logging.getLogger(__name__)
 
@@ -125,17 +130,6 @@ def kruskal_wallis(metrics: Mapping[str, Sequence[float]]) -> Dict[str, float]:
     eta_squared = (h_stat - df) / (n - 1) if n > 1 else float("nan")
 
     return {"h_stat": float(h_stat), "p_value": p_value, "df": float(df), "eta_squared": float(eta_squared)}
-
-
-def _rng_from_state(random_state: np.random.Generator | int | None) -> np.random.Generator:
-    if isinstance(random_state, np.random.Generator):
-        seed = int(random_state.integers(0, np.iinfo(np.int64).max))
-        return np.random.default_rng(seed)
-    if random_state is None:
-        return np.random.default_rng()
-    return np.random.default_rng(random_state)
-
-
 def bootstrap_confidence_interval(
     values: Sequence[float],
     *,
@@ -152,7 +146,7 @@ def bootstrap_confidence_interval(
         estimate = float(statistic(sample))
         return {"estimate": estimate, "lower": estimate, "upper": estimate}
 
-    rng = _rng_from_state(random_state)
+    rng = rng_from_state(random_state)
     estimates = np.empty(n_resamples, dtype=float)
     for idx in range(n_resamples):
         resample = rng.choice(sample, size=sample.size, replace=True)
@@ -352,127 +346,6 @@ def log_assumption_diagnostics(
             decision,
             alpha,
         )
-
-
-def _newey_west_variance(diff: np.ndarray, lag: int) -> float:
-    diff_centered = diff - diff.mean()
-    gamma_0 = float(np.dot(diff_centered, diff_centered) / diff.size)
-    if lag <= 0:
-        return gamma_0
-    variance = gamma_0
-    for h in range(1, min(lag, diff.size - 1) + 1):
-        weight = 1 - h / (lag + 1)
-        cov = float(np.dot(diff_centered[h:], diff_centered[:-h]) / diff.size)
-        variance += 2 * weight * cov
-    return max(variance, 1e-12)
-
-
-def diebold_mariano(
-    errors_a: Sequence[float],
-    errors_b: Sequence[float],
-    *,
-    power: int = 2,
-    use_newey_west: bool = False,
-    lag: int = 1,
-) -> Dict[str, float]:
-    e_a = np.asarray(errors_a, dtype=float)
-    e_b = np.asarray(errors_b, dtype=float)
-    if e_a.shape != e_b.shape:
-        raise ValueError("Error sequences must share the same length")
-
-    if power == 2:
-        losses_a = e_a ** 2
-        losses_b = e_b ** 2
-    else:
-        losses_a = np.abs(e_a) ** power
-        losses_b = np.abs(e_b) ** power
-
-    diff = losses_a - losses_b
-    mean_diff = diff.mean()
-    n = diff.size
-    if use_newey_west:
-        variance = _newey_west_variance(diff, lag)
-    else:
-        variance = diff.var(ddof=1)
-    denom = math.sqrt(variance / n + 1e-12)
-    dm_stat = mean_diff / denom if denom else float("nan")
-    p_value = 2 * NormalDist().cdf(-abs(dm_stat))
-    return {
-        "dm_stat": float(dm_stat),
-        "p_value": float(p_value),
-        "mean_diff": float(mean_diff),
-        "variance": float(variance),
-    }
-
-
-def hansen_model_confidence_set(
-    metrics: Mapping[str, Sequence[float]],
-    *,
-    alpha: float = 0.05,
-    n_bootstrap: int = 1000,
-    random_state: np.random.Generator | int | None = None,
-    higher_is_better: bool = True,
-) -> List[Dict[str, float]]:
-    arrays = {name: np.asarray(values, dtype=float) for name, values in metrics.items()}
-    if not arrays:
-        return []
-
-    lengths = [sample.size for sample in arrays.values() if sample.size]
-    if not lengths:
-        return []
-    min_len = min(lengths)
-    trimmed = {name: sample[:min_len] for name, sample in arrays.items()}
-    matrix = np.column_stack([values for values in trimmed.values()])
-    if not higher_is_better:
-        losses = matrix
-    else:
-        losses = -matrix
-
-    means = losses.mean(axis=0)
-    best_idx = int(np.argmin(means))
-    diff_obs = means - means[best_idx]
-
-    if n_bootstrap <= 0 or min_len < 2:
-        return [
-            {
-                "model": name,
-                "mean_score": float(trimmed[name].mean()),
-                "spa_p_value": 1.0 if idx == best_idx else 0.0,
-                "included": bool(idx == best_idx),
-                "ci_lower": float("nan"),
-                "ci_upper": float("nan"),
-            }
-            for idx, name in enumerate(trimmed.keys())
-        ]
-
-    rng = _rng_from_state(random_state)
-    boot_diffs = np.empty((n_bootstrap, diff_obs.size), dtype=float)
-    for b in range(n_bootstrap):
-        indices = rng.integers(0, min_len, size=min_len)
-        sampled = losses[indices]
-        sample_means = sampled.mean(axis=0)
-        boot_best = sample_means.min()
-        boot_diffs[b] = sample_means - boot_best
-
-    p_values = np.mean(boot_diffs >= diff_obs, axis=0)
-    ci_upper = np.quantile(boot_diffs, 1 - alpha, axis=0)
-    ci_lower = np.quantile(boot_diffs, alpha, axis=0)
-
-    results: List[Dict[str, float]] = []
-    for idx, name in enumerate(trimmed.keys()):
-        results.append(
-            {
-                "model": name,
-                "mean_score": float(trimmed[name].mean()),
-                "spa_p_value": float(p_values[idx]),
-                "included": bool(p_values[idx] > alpha),
-                "ci_lower": float(ci_lower[idx]),
-                "ci_upper": float(ci_upper[idx]),
-            }
-        )
-    return results
-
-
 def _sanitize_slug(*parts: str) -> str:
     slug = "-".join(str(part) for part in parts if part is not None)
     slug = re.sub(r"[^a-zA-Z0-9\-_.]+", "_", slug)
@@ -520,51 +393,6 @@ def collect_multirun_repository(
                 }
             )
     return pd.DataFrame(rows)
-
-
-def construct_dm_comparisons(
-    repository: pd.DataFrame,
-    *,
-    pair_col: str = "pair",
-    horizon_col: str = "horizon",
-    model_col: str = "model",
-    seed_col: str = "seed",
-    value_col: str = "value",
-    lag: int = 1,
-    power: int = 2,
-) -> pd.DataFrame:
-    rows: List[Dict[str, object]] = []
-    if repository.empty:
-        return pd.DataFrame(rows)
-
-    grouped = repository.groupby([pair_col, horizon_col], dropna=False)
-    for (pair, horizon), group in grouped:
-        pivot = group.pivot_table(index=seed_col, columns=model_col, values=value_col)
-        pivot = pivot.dropna(axis=0, how="any")
-        if pivot.empty:
-            continue
-        for model_a, model_b in combinations(pivot.columns, 2):
-            values_a = pivot[model_a].to_numpy()
-            values_b = pivot[model_b].to_numpy()
-            dm = diebold_mariano(
-                values_a,
-                values_b,
-                power=power,
-                use_newey_west=True,
-                lag=lag,
-            )
-            rows.append(
-                {
-                    pair_col: pair,
-                    horizon_col: horizon,
-                    "model_a": model_a,
-                    "model_b": model_b,
-                    **dm,
-                }
-            )
-    return pd.DataFrame(rows)
-
-
 def pairwise_effect_sizes(metrics: Mapping[str, Sequence[float]], baseline: str) -> List[Dict[str, float]]:
     baseline_values = np.asarray(metrics[baseline], dtype=float)
     results: List[Dict[str, float]] = []
@@ -822,6 +650,7 @@ def analyze_dm_cache(
     newey_west_lag: int = 1,
     higher_is_better: bool = False,
     random_state: int | np.random.Generator | None = None,
+    n_bootstrap: int = 2000,
 ) -> Dict[str, pd.DataFrame]:
     if dm_cache.empty:
         LOGGER.warning("DM cache is empty; skipping statistical post-processing")
@@ -843,6 +672,7 @@ def analyze_dm_cache(
     analyzer = StatisticalAnalyzer(
         run_id=run_id,
         output_dir=output_dir,
+        n_bootstrap=n_bootstrap,
         alpha=alpha,
         newey_west_lag=newey_west_lag,
         random_state=random_state,
