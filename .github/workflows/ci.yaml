@@ -50,8 +50,23 @@ jobs:
       - name: Pytest
         run: make test
 
-  smoke:
+  train-smoke:
+    name: train-smoke (${{ matrix.name }})
+    needs: tests
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: workflow
+            command: "make train-smoke"
+            upload_artifacts: true
+          - name: manifest-schema
+            command: "pytest tests/experiments/test_multirun.py::test_run_multirun_writes_expected_layout"
+            upload_artifacts: false
+          - name: folder-schema
+            command: "pytest tests/integration/test_walkforward_artifacts.py::test_multirun_creates_aggregated_window_artifacts"
+            upload_artifacts: false
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -61,8 +76,45 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements-dev.txt
-      - name: Deterministic smoke test
-        run: make train-smoke
+      - name: Run smoke workflow
+        if: ${{ matrix.upload_artifacts }}
+        run: ${{ matrix.command }}
+      - name: Run pytest validation
+        if: ${{ not matrix.upload_artifacts }}
+        run: ${{ matrix.command }}
+      - name: Upload smoke runs artifact
+        if: ${{ matrix.upload_artifacts }}
+        id: upload_runs
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-runs
+          path: artifacts/runs
+          if-no-files-found: warn
+      - name: Upload smoke aggregates artifact
+        if: ${{ matrix.upload_artifacts }}
+        id: upload_aggregates
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-aggregates
+          path: artifacts/aggregates
+          if-no-files-found: warn
+      - name: Publish smoke summary
+        if: ${{ matrix.upload_artifacts }}
+        run: |
+          {
+            echo "## Smoke artifacts";
+            echo "";
+            if [ -n "${{ steps.upload_runs.outputs.artifact-url }}" ]; then
+              echo "- [Runs](${{ steps.upload_runs.outputs.artifact-url }})";
+            else
+              echo "- Runs artifact upload unavailable.";
+            fi
+            if [ -n "${{ steps.upload_aggregates.outputs.artifact-url }}" ]; then
+              echo "- [Aggregates](${{ steps.upload_aggregates.outputs.artifact-url }})";
+            else
+              echo "- Aggregates artifact upload unavailable.";
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
 
   benchmark:
     runs-on: ubuntu-latest
