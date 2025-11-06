@@ -4,7 +4,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Iterable, Sequence
+from typing import Dict, Iterable, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
@@ -102,6 +102,15 @@ class SequenceDataset(Dataset):
 
 
 @dataclass
+class PartitionSeries:
+    """Dense arrays backing a single walk-forward partition."""
+
+    features: np.ndarray
+    targets: np.ndarray
+    sequence_targets: np.ndarray
+
+
+@dataclass
 class WindowedData:
     train: SequenceDataset
     val: SequenceDataset
@@ -109,6 +118,9 @@ class WindowedData:
     feature_scaler: StandardScaler
     target_scaler: StandardScaler
     metadata: dict[str, object]
+    train_series: PartitionSeries
+    val_series: PartitionSeries
+    test_series: PartitionSeries
 
 
 def create_dataloaders(data: WindowedData, cfg: DataConfig) -> dict[str, DataLoader]:

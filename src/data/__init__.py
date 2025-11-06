@@ -3,6 +3,7 @@
 from .dataset import (
     CalendarConfig,
     DataConfig,
+    PartitionSeries,
     SequenceDataset,
     TimezoneConfig,
     WalkForwardSettings,
@@ -15,6 +16,7 @@ from .walkforward import WalkForwardSplitter
 __all__ = [
     "CalendarConfig",
     "DataConfig",
+    "PartitionSeries",
     "SequenceDataset",
     "TimezoneConfig",
     "WalkForwardSettings",

@@ -1,0 +1,19 @@
+# @package _global_
+
+model:
+  name: arima
+  order: [2, 1, 2]
+  seasonal_order: null
+  trend: null
+  enforce_stationarity: true
+  enforce_invertibility: true
+  method: null
+  maxiter: 200
+
+training:
+  epochs: 2
+  learning_rate: 0.001
+  weight_decay: 0.0
+  grad_clip: null
+  log_interval: 10
+  device: cpu
