@@ -29,13 +29,19 @@ It is **not** intended for high-frequency trading or production deployment witho
 - Interpretability artefacts (attention, attributions) generated through `python -m src.analysis.interpretability`.
 
 ## Reproducibility
-1. Create the Conda environment: `conda env create -f environment.yml`
-2. Activate it: `conda activate ieee-fx`
-3. Run a smoke training job: `python -m src.cli training.epochs=1 training.device=cpu`
-4. Regenerate publication assets from stored metrics: `python scripts/reproduce_all.py`
+1. Run `./scripts/reproduce_all.sh` from the repository root. The script provisions
+   the Conda environment, executes the multi-run training workflow, triggers the
+   calibration/statistical CLIs, and rebuilds `paper_outputs/` from the generated
+   artifacts.
+2. For a lightweight smoke validation, execute
+   `./scripts/reproduce_all.sh --smoke --no-conda`; this path mirrors the CI
+   regression guard and keeps runtimes short.
+3. The script wipes `artifacts/` and `paper_outputs/` before starting and fails if
+   required predictions or DM caches are missing, ensuring the release artifacts are
+   produced from a clean slate.
 
-Hydra training runs are materialised under `artifacts/runs/<model>/<config_hash>/<pair>_<horizon>/window-*/`. Each
-window directory includes:
+Hydra training runs are materialised under `artifacts/runs/<model>/<config_hash>/<pair>_<horizon>/window-*/`. Each window
+directory includes:
 
 - `metrics.json` summarising the final training/validation losses.
 - `metadata.json` capturing the resolved config hash, dataset checksums, environment lockfile digests, and an artefact index.
