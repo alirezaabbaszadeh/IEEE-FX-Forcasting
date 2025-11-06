@@ -22,6 +22,8 @@ if TYPE_CHECKING:  # pragma: no cover - type-checking support only
 from src.utils.artifacts import build_run_metadata, compute_dataset_checksums
 from src.utils.manifest import write_manifest
 
+import pandas as pd
+
 
 LOGGER = logging.getLogger(__name__)
 
@@ -250,14 +252,21 @@ def _write_run_artifacts(
     with metrics_path.open("w", encoding="utf-8") as handle:
         json.dump(metrics, handle, indent=2, sort_keys=True)
 
+    run_metadata = dict(result.metadata)
+    dataset_meta = dict(run_metadata.get("dataset") or {})
+    split_records = dataset_meta.get("split_records")
+    if split_records:
+        frame = pd.DataFrame(split_records)
+        frame.to_csv(run_dir / "splits.csv", index=False)
+
     project_root = _infer_project_root(run_dir)
     resolved_config_path = _ensure_resolved_config(
         run_dir,
-        run_metadata=result.metadata,
+        run_metadata=run_metadata,
         base_metadata=base_metadata,
         project_root=project_root,
     )
-    manifest_path = _ensure_manifest(run_dir, result.metadata)
+    manifest_path = _ensure_manifest(run_dir, run_metadata)
     compute_path = _write_compute_log(run_dir, result)
 
     artifact_index = {
@@ -268,8 +277,9 @@ def _write_run_artifacts(
         "resolved_config": resolved_config_path.name,
     }
 
-    run_metadata = dict(result.metadata)
-    dataset_meta = dict(run_metadata.get("dataset") or {})
+    if split_records:
+        artifact_index["splits"] = "splits.csv"
+
     dataset_checksums = compute_dataset_checksums(dataset_meta)
     metadata_payload = build_run_metadata(
         run_metadata,

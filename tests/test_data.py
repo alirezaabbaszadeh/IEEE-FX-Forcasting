@@ -10,7 +10,7 @@ import torch
 
 from src.data.loader import FXDataLoader, FXDataLoaderConfig
 from src.data.dataset import DataConfig, TimezoneConfig, WalkForwardSettings, prepare_datasets
-from src.eval.scheduler import WalkForwardConfig, WalkForwardScheduler
+from src.splits.walk_forward import WalkForwardConfig, WalkForwardScheduler
 
 
 @pytest.fixture

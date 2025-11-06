@@ -135,6 +135,20 @@ def _serialise_dataset_metadata(metadata: Mapping[str, object]) -> dict[str, obj
     return payload
 
 
+def _persist_split_audit(output_dir: Path, dataset_metadata: Mapping[str, object]) -> None:
+    """Write a CSV summary of the dataset splits if diagnostics are available."""
+
+    records = dataset_metadata.get("split_records")
+    if not records:
+        return
+
+    frame = pd.DataFrame(records)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    path = output_dir / "splits.csv"
+    frame.to_csv(path, index=False)
+    LOGGER.info("Saved split audit to %s", path)
+
+
 def _build_model_config(cfg: DictConfig, input_features: int, time_steps: int) -> ModelConfig:
     return ModelConfig(
         input_features=input_features,
@@ -661,11 +675,18 @@ def _write_single_run_artifacts(output_dir: Path, result: RunResult) -> None:
     with metrics_path.open("w", encoding="utf-8") as handle:
         json.dump(metrics, handle, indent=2, sort_keys=True)
 
+    metadata = dict(result.metadata)
+    dataset_meta = dict(metadata.get("dataset") or {})
+    _persist_split_audit(output_dir, dataset_meta)
+
     artifact_index: dict[str, object] = {
         "metrics": metrics_path.name,
         "metadata": "metadata.json",
         "manifest": "manifest.json",
     }
+
+    if dataset_meta.get("split_records"):
+        artifact_index["splits"] = "splits.csv"
 
     if getattr(result.summary, "benchmarks", None):
         try:
@@ -687,8 +708,6 @@ def _write_single_run_artifacts(output_dir: Path, result: RunResult) -> None:
             if benchmark_entries:
                 artifact_index["benchmarks"] = benchmark_entries
 
-    metadata = dict(result.metadata)
-    dataset_meta = dict(metadata.get("dataset") or {})
     dataset_checksums = compute_dataset_checksums(dataset_meta)
     metadata_payload = build_run_metadata(
         metadata,
