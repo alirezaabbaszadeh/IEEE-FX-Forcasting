@@ -168,13 +168,28 @@ class WalkForwardSplitter:
             target_scaler = StandardScaler().fit(train_df[[target_column]])
 
             train_dataset = self._build_partition_dataset(
-                train_df, feature_scaler, target_scaler, horizon_steps
+                train_df,
+                feature_scaler,
+                target_scaler,
+                horizon_steps,
+                horizon_td,
+                partition_name="train",
             )
             val_dataset = self._build_partition_dataset(
-                val_df, feature_scaler, target_scaler, horizon_steps
+                val_df,
+                feature_scaler,
+                target_scaler,
+                horizon_steps,
+                horizon_td,
+                partition_name="val",
             )
             test_dataset = self._build_partition_dataset(
-                test_df, feature_scaler, target_scaler, horizon_steps
+                test_df,
+                feature_scaler,
+                target_scaler,
+                horizon_steps,
+                horizon_td,
+                partition_name="test",
             )
 
             diag_metadata = split.diagnostics.to_metadata()
@@ -220,6 +235,9 @@ class WalkForwardSplitter:
         feature_scaler: StandardScaler,
         target_scaler: StandardScaler,
         horizon_steps: int,
+        horizon_td: pd.Timedelta,
+        *,
+        partition_name: str,
     ) -> SequenceDataset:
         feature_columns = list(self.cfg.feature_columns)
         target_column = self.cfg.target_column
@@ -231,11 +249,45 @@ class WalkForwardSplitter:
                 np.empty((0, 1), dtype=np.float32),
             )
 
+        self._validate_partition_timestamps(
+            df.index, horizon_steps, horizon_td, partition_name
+        )
+
         scaled_features = feature_scaler.transform(df.loc[:, feature_columns]).astype(np.float32)
         scaled_targets = target_scaler.transform(df[[target_column]]).astype(np.float32).reshape(-1)
 
         sequences, targets = self._create_sequences(scaled_features, scaled_targets, horizon_steps)
         return SequenceDataset(sequences, targets)
+
+    def _validate_partition_timestamps(
+        self,
+        index: pd.Index,
+        horizon_steps: int,
+        horizon_td: pd.Timedelta,
+        partition_name: str,
+    ) -> None:
+        if index.empty:
+            return
+
+        lookback = self.cfg.time_steps
+        total = len(index)
+        limit = total - lookback - horizon_steps + 1
+        if limit <= 0:
+            return
+
+        timestamps = pd.DatetimeIndex(index)
+        for idx in range(limit):
+            feature_end = timestamps[idx + lookback - 1]
+            target_idx = idx + lookback + horizon_steps - 1
+            target_time = timestamps[target_idx]
+            delta = target_time - feature_end
+            if delta < horizon_td:
+                raise ValueError(
+                    "Feature window ending at "
+                    f"{feature_end.isoformat()} in {partition_name!r} split "
+                    f"breaches the {horizon_td} prediction horizon (target at "
+                    f"{target_time.isoformat()}, delta {delta})."
+                )
 
     def _create_sequences(
         self,

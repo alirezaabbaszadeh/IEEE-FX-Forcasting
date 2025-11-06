@@ -50,6 +50,9 @@ jobs:
       - name: Pytest
         run: make test
 
+      - name: Leak guard
+        run: pytest tests/test_leak.py
+
   train-smoke:
     name: train-smoke (${{ matrix.name }})
     needs: tests

@@ -31,5 +31,8 @@ jobs:
       - name: Run tests
         run: make test
 
+      - name: Leak guard
+        run: pytest tests/test_leak.py
+
       - name: Deterministic smoke training
         run: make train-smoke
