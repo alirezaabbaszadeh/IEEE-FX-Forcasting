@@ -62,7 +62,7 @@ jobs:
       matrix:
         include:
           - name: workflow
-            command: "make train-smoke"
+            command: "bash scripts/reproduce_all.sh --no-conda --smoke"
             upload_artifacts: true
           - name: manifest-schema
             command: "pytest tests/experiments/test_multirun.py::test_run_multirun_writes_expected_layout"

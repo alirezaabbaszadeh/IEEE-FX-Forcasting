@@ -119,6 +119,17 @@ make train-smoke
 
 Run `make ci` locally to mirror the pipeline before opening a pull request.
 
+## End-to-end reproduction script
+
+Run `./scripts/reproduce_all.sh` from the repository root to provision the Conda
+environment, execute the multi-run training workflow, launch the calibration and
+statistical analysis CLIs, and rebuild `paper_outputs/` from scratch. The script
+clears any existing `artifacts/` and `paper_outputs/` directories so run it on a
+clean machine (or throwaway workspace) when validating a release. Pass
+`--no-conda` when Conda is unavailable (e.g. in CI) and `--smoke` to execute the
+shortened regression workload. Additional Hydra overrides can be forwarded after
+`--` just as you would with `python -m src.cli`.
+
 ## Artifact directory layout
 
 Running `make train-smoke` now executes the multi-run training pipeline and populates
