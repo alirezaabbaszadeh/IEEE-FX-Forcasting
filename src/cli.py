@@ -382,6 +382,7 @@ def _run_training_once(
     dataset_key: Tuple[str, object, int] | None = None,
     dataset: WindowedData | None = None,
     data_cfg: DataConfig | None = None,
+    manifest_path: Path | None = None,
 ) -> RunResult:
     seed = int(cfg.seed)
     seed_everything(seed)
@@ -425,7 +426,13 @@ def _run_training_once(
     model = TemporalForecastingModel(model_cfg)
 
     trainer_cfg = _build_trainer_config(cfg.training)
-    summary = train(model, dataloaders, trainer_cfg, metadata=dict(run_metadata))
+    summary = train(
+        model,
+        dataloaders,
+        trainer_cfg,
+        metadata=dict(run_metadata),
+        manifest_path=manifest_path,
+    )
 
     benchmark_mode = _get_benchmark_mode()
     if benchmark_mode:
@@ -600,6 +607,7 @@ def _single_run(cfg: DictConfig) -> None:
             dataset_key=dataset_key,
             dataset=window,
             data_cfg=data_cfg,
+            manifest_path=output_dir / "manifest.json",
         )
         _write_single_run_artifacts(output_dir, result)
 
@@ -656,6 +664,7 @@ def _write_single_run_artifacts(output_dir: Path, result: RunResult) -> None:
     artifact_index: dict[str, object] = {
         "metrics": metrics_path.name,
         "metadata": "metadata.json",
+        "manifest": "manifest.json",
     }
 
     if getattr(result.summary, "benchmarks", None):
@@ -730,7 +739,13 @@ def _multirun_entry(cfg: DictConfig) -> None:
             config_hash=config_hash,
         )
 
-        def _runner(seed: int, *, _dataset_key=dataset_key, _window=window) -> RunResult:
+        def _runner(
+            seed: int,
+            *,
+            _dataset_key=dataset_key,
+            _window=window,
+            _output_dir=output_dir,
+        ) -> RunResult:
             cfg_copy = OmegaConf.create(OmegaConf.to_container(cfg, resolve=True))
             cfg_copy.seed = seed
             result = _run_training_once(
@@ -740,6 +755,7 @@ def _multirun_entry(cfg: DictConfig) -> None:
                 dataset_key=_dataset_key,
                 dataset=_window,
                 data_cfg=data_cfg,
+                manifest_path=(_output_dir / f"seed-{seed}" / "manifest.json"),
             )
             dataset_meta = dict(_window.metadata)
             dataset_meta.setdefault("pair", _dataset_key[0])
