@@ -34,5 +34,5 @@ jobs:
       - name: Leak guard
         run: pytest tests/test_leak.py
 
-      - name: Deterministic smoke training
-        run: make train-smoke
+      - name: Reproduction script smoke test
+        run: bash scripts/reproduce_all.sh --no-conda --smoke
