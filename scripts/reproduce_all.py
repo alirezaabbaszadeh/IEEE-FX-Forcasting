@@ -8,6 +8,7 @@ from typing import Iterable, List, Sequence
 
 from scripts.export_figures import export_figures
 from scripts.export_tables import export_tables
+from src.reporting.aggregates import collate_run_group, discover_run_roots
 
 
 def _resolve_artifact_path(base: Path, entry: str) -> Path:
@@ -64,13 +65,29 @@ def _collect_config_paths(metadata_files: Sequence[Path], project_root: Path) ->
     return configs
 
 
+def _populate_aggregates(
+    artifacts_root: Path,
+    *,
+    aggregates_dir: Path | None = None,
+) -> dict[str, list[str]]:
+    runs_root = artifacts_root / "runs"
+    outputs: dict[str, list[str]] = {}
+    for run_root in discover_run_roots(runs_root):
+        produced = collate_run_group(run_root, aggregates_root=aggregates_dir)
+        relative = run_root.relative_to(artifacts_root)
+        outputs[str(relative)] = [str(path) for path in produced.values()]
+    return outputs
+
+
 def rebuild_publication_assets(
     *,
     artifacts_root: Path,
     tables_dir: Path,
     figures_dir: Path,
     project_root: Path,
+    aggregates_dir: Path | None = None,
 ) -> dict[str, object]:
+    aggregate_outputs = _populate_aggregates(artifacts_root, aggregates_dir=aggregates_dir)
     metadata_files = _discover_metadata_files(artifacts_root)
     metrics_paths = _collect_metrics_paths(metadata_files)
     config_paths = _collect_config_paths(metadata_files, project_root)
@@ -88,6 +105,7 @@ def rebuild_publication_assets(
         "tables": {name: str(path) for name, path in table_outputs.items()},
         "figures": [str(path) for path in figure_paths],
         "configs": [str(path.relative_to(project_root)) for path in config_paths],
+        "aggregates": aggregate_outputs,
     }
 
 
@@ -110,6 +128,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Output directory for regenerated figures",
     )
     parser.add_argument(
+        "--aggregates-dir",
+        type=Path,
+        default=None,
+        help="Optional directory for aggregate CSV outputs (defaults to artifacts/aggregates)",
+    )
+    parser.add_argument(
         "--project-root",
         type=Path,
         default=Path.cwd(),
@@ -120,6 +144,11 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=None,
         help="Optional path to write a JSON manifest summarising outputs",
+    )
+    parser.add_argument(
+        "--populate-only",
+        action="store_true",
+        help="Populate aggregate CSV outputs without regenerating tables or figures",
     )
     return parser
 
@@ -133,12 +162,19 @@ def main(argv: Iterable[str] | None = None) -> None:  # pragma: no cover - CLI w
     figures_dir = (args.figures_dir or artifacts_root / "figures").resolve()
     project_root = args.project_root.resolve()
 
-    manifest = rebuild_publication_assets(
-        artifacts_root=artifacts_root,
-        tables_dir=tables_dir,
-        figures_dir=figures_dir,
-        project_root=project_root,
-    )
+    aggregates_dir = args.aggregates_dir.resolve() if args.aggregates_dir is not None else None
+
+    if args.populate_only:
+        aggregate_outputs = _populate_aggregates(artifacts_root, aggregates_dir=aggregates_dir)
+        manifest = {"aggregates": aggregate_outputs}
+    else:
+        manifest = rebuild_publication_assets(
+            artifacts_root=artifacts_root,
+            tables_dir=tables_dir,
+            figures_dir=figures_dir,
+            project_root=project_root,
+            aggregates_dir=aggregates_dir,
+        )
 
     if args.manifest is not None:
         args.manifest.write_text(json.dumps(manifest, indent=2))

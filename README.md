@@ -118,3 +118,22 @@ make train-smoke
 ```
 
 Run `make ci` locally to mirror the pipeline before opening a pull request.
+
+## Artifact directory layout
+
+Running `make train-smoke` now executes the multi-run training pipeline and populates
+structured outputs. Each seed writes into
+`artifacts/runs/<model>/<config_hash>/<pair>_<horizon>/<window>/seed-<id>/` with:
+
+- `metrics.json` summarising the final epoch metrics.
+- `metadata.json` referencing the per-run manifest, resolved config, and compute log.
+- `resolved_config.yaml`, `manifest.json`, and `compute.json` describing the exact
+  configuration and hardware snapshot used for the run.
+
+Aggregated reports are collated under
+`artifacts/aggregates/<model>/<config_hash>/<pair>_<horizon>/<window>/` with
+`aggregate.csv`, `calibration.csv`, `dm_table.csv`, `spa_table.csv`, and
+`mcs_table.csv` placeholders ready for publication tables. Use
+`python scripts/reproduce_all.py --populate-only` to regenerate these placeholders
+without rebuilding tables and figures, or call the script without the flag to export
+full publication assets alongside the aggregate summaries.

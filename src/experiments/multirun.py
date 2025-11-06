@@ -3,10 +3,13 @@ from __future__ import annotations
 
 import csv
 import json
+import logging
 import math
+import shutil
+from datetime import datetime, timezone
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Iterable, Sequence, TYPE_CHECKING
+from typing import Callable, Iterable, Mapping, Sequence, TYPE_CHECKING
 
 try:  # pragma: no cover - optional dependency for precise statistics
     from scipy import stats as _scipy_stats
@@ -17,6 +20,10 @@ if TYPE_CHECKING:  # pragma: no cover - type-checking support only
     from src.training.engine import TrainingSummary
 
 from src.utils.artifacts import build_run_metadata, compute_dataset_checksums
+from src.utils.manifest import write_manifest
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass
@@ -138,7 +145,103 @@ def _compute_stats(values: Iterable[float]) -> dict[str, float]:
     }
 
 
-def _write_run_artifacts(output_dir: Path, result: RunResult) -> tuple[dict[str, float], dict[str, object]]:
+def _infer_project_root(path: Path) -> Path | None:
+    for parent in [path, *path.parents]:
+        if parent.name == "artifacts":
+            return parent.parent
+    return None
+
+
+def _locate_config_snapshot(metadata: Mapping[str, object] | None, project_root: Path | None) -> Path | None:
+    if not metadata:
+        return None
+    config_entry = metadata.get("config")
+    if not isinstance(config_entry, Mapping):
+        return None
+    raw_path = config_entry.get("path")
+    if raw_path is None:
+        return None
+    candidate = Path(str(raw_path))
+    if not candidate.is_absolute() and project_root is not None:
+        candidate = project_root / candidate
+    if candidate.exists():
+        return candidate
+    return None
+
+
+def _ensure_resolved_config(
+    run_dir: Path,
+    *,
+    run_metadata: Mapping[str, object] | None,
+    base_metadata: Mapping[str, object] | None,
+    project_root: Path | None,
+) -> Path:
+    destination = run_dir / "resolved_config.yaml"
+    if destination.exists():
+        return destination
+
+    for source in (run_metadata, base_metadata):
+        candidate = _locate_config_snapshot(source, project_root)
+        if candidate is None:
+            continue
+        try:
+            shutil.copy(candidate, destination)
+        except OSError:
+            LOGGER.exception("Failed to copy resolved config from %s", candidate)
+        else:
+            return destination
+
+    destination.write_text("# Resolved configuration snapshot unavailable; placeholder generated\n", encoding="utf-8")
+    return destination
+
+
+def _ensure_manifest(run_dir: Path, metadata: Mapping[str, object] | None) -> Path:
+    manifest_path = run_dir / "manifest.json"
+    if manifest_path.exists() and manifest_path.stat().st_size > 0:
+        return manifest_path
+    try:
+        write_manifest(manifest_path, metadata)
+    except Exception:  # pragma: no cover - defensive: manifest must not block execution
+        LOGGER.exception("Failed to write manifest to %s", manifest_path)
+    return manifest_path
+
+
+def _write_compute_log(run_dir: Path, result: RunResult) -> Path:
+    compute_path = run_dir / "compute.json"
+    epochs = list(result.summary.epochs)
+    payload = {
+        "seed": result.seed,
+        "device": result.summary.device or result.metadata.get("device"),
+        "epochs": len(epochs),
+        "best_val_loss": result.summary.best_val_loss,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "steps": [
+            {
+                "epoch": index,
+                "train_loss": metrics.train_loss,
+                "val_loss": metrics.val_loss,
+                "val_mae": metrics.val_mae,
+            }
+            for index, metrics in enumerate(epochs, start=1)
+        ],
+    }
+    hardware = result.metadata.get("hardware") if isinstance(result.metadata, Mapping) else None
+    if hardware:
+        payload["hardware"] = hardware
+    deterministic = result.metadata.get("deterministic_flags") if isinstance(result.metadata, Mapping) else None
+    if deterministic:
+        payload["deterministic_flags"] = deterministic
+    with compute_path.open("w", encoding="utf-8") as handle:
+        json.dump(payload, handle, indent=2, sort_keys=True)
+    return compute_path
+
+
+def _write_run_artifacts(
+    output_dir: Path,
+    result: RunResult,
+    *,
+    base_metadata: Mapping[str, object] | None,
+) -> tuple[dict[str, float], dict[str, object]]:
     run_dir = output_dir / f"seed-{result.seed}"
     run_dir.mkdir(parents=True, exist_ok=True)
 
@@ -147,10 +250,22 @@ def _write_run_artifacts(output_dir: Path, result: RunResult) -> tuple[dict[str,
     with metrics_path.open("w", encoding="utf-8") as handle:
         json.dump(metrics, handle, indent=2, sort_keys=True)
 
+    project_root = _infer_project_root(run_dir)
+    resolved_config_path = _ensure_resolved_config(
+        run_dir,
+        run_metadata=result.metadata,
+        base_metadata=base_metadata,
+        project_root=project_root,
+    )
+    manifest_path = _ensure_manifest(run_dir, result.metadata)
+    compute_path = _write_compute_log(run_dir, result)
+
     artifact_index = {
         "metrics": metrics_path.name,
         "metadata": "metadata.json",
-        "manifest": "manifest.json",
+        "manifest": manifest_path.name,
+        "compute": compute_path.name,
+        "resolved_config": resolved_config_path.name,
     }
 
     run_metadata = dict(result.metadata)
@@ -200,7 +315,7 @@ def run_multirun(
 
     for seed in seeds:
         result = runner(seed)
-        metrics, run_metadata = _write_run_artifacts(output_dir, result)
+        metrics, run_metadata = _write_run_artifacts(output_dir, result, base_metadata=base_metadata)
         if representative_metadata is None:
             representative_metadata = dict(run_metadata)
         for metric_name, value in metrics.items():
@@ -222,12 +337,24 @@ def run_multirun(
     metadata_blob["runs"] = len(seeds)
     metadata_blob["metrics"] = aggregated
     metadata_blob["run_records"] = run_records
+    run_entries = [f"seed-{seed}" for seed in seeds]
     metadata_blob["artifacts"] = {
         "metadata": "metadata.json",
         "summary": "summary.csv",
-        "runs": [f"seed-{seed}" for seed in seeds],
+        "runs": run_entries,
     }
-    with (output_dir / "metadata.json").open("w", encoding="utf-8") as handle:
+    if run_entries:
+        metadata_blob["artifacts"]["compute"] = f"{run_entries[0]}/compute.json"
+        metadata_blob["artifacts"]["resolved_config"] = f"{run_entries[0]}/resolved_config.yaml"
+    metadata_path = output_dir / "metadata.json"
+    with metadata_path.open("w", encoding="utf-8") as handle:
         json.dump(metadata_blob, handle, indent=2, sort_keys=True)
+
+    try:  # best-effort aggregation fan-out
+        from src.reporting.aggregates import collate_run_group
+
+        collate_run_group(output_dir)
+    except Exception:  # pragma: no cover - aggregation must never break training flows
+        LOGGER.exception("Failed to collate aggregate reports for %s", output_dir)
 
     return aggregated
