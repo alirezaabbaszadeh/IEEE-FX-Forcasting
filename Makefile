@@ -16,7 +16,8 @@ test:
 	$(PYTHON) -m pytest
 
 train-smoke:
-        $(PYTHON) -m src.cli training.epochs=1 training.device=cpu data.time_steps=16 data.batch_size=32
+        $(PYTHON) -m src.cli --multirun training.epochs=1 training.device=cpu data.time_steps=16 data.batch_size=32
+        $(PYTHON) scripts/reproduce_all.py --populate-only
 
 benchmark:
         $(PYTHON) scripts/benchmark.py --train-warmup 1 --inference-warmup 2 --inference-runs 5

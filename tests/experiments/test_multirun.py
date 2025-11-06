@@ -67,6 +67,21 @@ def test_run_multirun_writes_expected_layout(tmp_path: Path) -> None:
         assert "hardware" in metadata
         assert metadata["artifacts"]["metrics"] == "metrics.json"
         assert metadata["artifacts"]["metadata"] == "metadata.json"
+        assert metadata["artifacts"]["resolved_config"] == "resolved_config.yaml"
+        assert metadata["artifacts"]["compute"] == "compute.json"
+
+        resolved_path = seed_dir / "resolved_config.yaml"
+        assert resolved_path.exists()
+        assert resolved_path.read_text().strip() != ""
+
+        manifest_path = seed_dir / "manifest.json"
+        assert manifest_path.exists()
+        manifest_payload = json.loads(manifest_path.read_text())
+        assert manifest_payload.get("git")
+
+        compute_payload = json.loads((seed_dir / "compute.json").read_text())
+        assert compute_payload["seed"] == seed
+        assert compute_payload["epochs"] == len(summaries[seed].epochs)
 
     summary_path = tmp_path / "summary.csv"
     assert summary_path.exists()
@@ -89,6 +104,15 @@ def test_run_multirun_writes_expected_layout(tmp_path: Path) -> None:
         assert record["metadata"].get("git_sha") == "abcdef"
     assert metadata_blob["artifacts"]["summary"] == "summary.csv"
     assert set(metadata_blob["artifacts"]["runs"]) == {f"seed-{seed}" for seed in seeds}
+    assert metadata_blob["artifacts"]["compute"].endswith("compute.json")
+    assert metadata_blob["artifacts"]["resolved_config"].endswith("resolved_config.yaml")
+
+    aggregate_dir = tmp_path / "aggregates"
+    assert (aggregate_dir / "aggregate.csv").exists()
+    assert (aggregate_dir / "calibration.csv").exists()
+    assert (aggregate_dir / "dm_table.csv").exists()
+    assert (aggregate_dir / "spa_table.csv").exists()
+    assert (aggregate_dir / "mcs_table.csv").exists()
 
 
 def test_run_multirun_aggregation_math(tmp_path: Path) -> None:
