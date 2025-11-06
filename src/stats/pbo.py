@@ -11,6 +11,8 @@ from typing import Iterable, Sequence
 import numpy as np
 import pandas as pd
 
+from src.backtest.engine import append_metrics_to_pbo_table
+
 from .utils import rng_from_state
 
 LOGGER = logging.getLogger(__name__)
@@ -141,9 +143,17 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def _write_pbo_outputs(pbo_table: pd.DataFrame, output_dir: Path) -> None:
+def _write_pbo_outputs(pbo_table: pd.DataFrame, output_dir: Path, *, run_id: str) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     pbo_table.to_csv(output_dir / "pbo.csv", index=False)
+    if not pbo_table.empty:
+        metrics = pbo_table.assign(
+            run_id=run_id,
+            scenario="pbo",
+            metric="pbo",
+            value=pbo_table["pbo"],
+        )[["run_id", "pair", "horizon", "scenario", "metric", "value"]]
+        append_metrics_to_pbo_table(metrics)
 
 
 def main(argv: Sequence[str] | None = None) -> None:
@@ -175,7 +185,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         random_state=args.random_seed,
     )
 
-    _write_pbo_outputs(pbo_table, args.output_dir)
+    _write_pbo_outputs(pbo_table, args.output_dir, run_id=str(args.run_id))
 
 
 if __name__ == "__main__":  # pragma: no cover - CLI entry point
