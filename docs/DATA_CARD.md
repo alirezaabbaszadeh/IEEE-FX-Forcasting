@@ -1,0 +1,57 @@
+# IEEE FX Forecasting Data Card
+
+## Summary
+This data card describes the synthetic fixture dataset that ships with the IEEE
+FX Forecasting benchmark and the expectations for swapping in production-grade
+foreign exchange data sources. The default fixture provides deterministic inputs
+for tests and documentation; research deployments should replace it with
+licensed market feeds that meet institutional compliance requirements.
+
+## Dataset origin
+- **Provenance.** The fixture is generated from anonymised statistical profiles
+  of EUR/USD spot prices and stored in `data/sample.csv`. 【F:data/sample.csv†L1-L10】
+- **Fields.** Each record includes an ISO-8601 timestamp, the trading pair code,
+  and OHLC candle values (`Open`, `High`, `Low`, `Close`). 【F:data/sample.csv†L1-L10】
+- **Licensing.** Synthetic data is distributed for unrestricted benchmarking. Any
+  real-market replacement must respect vendor terms and jurisdictional limits.
+
+## Collection and preprocessing
+- **Timezone handling.** Timestamps are parsed with explicit source/target
+  timezones, filling ambiguous or missing offsets to guarantee chronological
+  consistency across walk-forward windows. 【F:src/data/walkforward.py†L60-L101】
+- **Pair filtering.** The loader filters on the requested currency codes and
+  raises when no rows are available, preventing silent drops of minority pairs. 【F:src/data/walkforward.py†L34-L68】
+- **Normalization.** StandardScaler instances fit on the training slice are
+  reused for validation/test partitions to avoid leakage. 【F:src/data/walkforward.py†L122-L160】
+- **Sequence creation.** Sliding windows enforce lookback and horizon multiples so
+  that input features and targets are aligned without skipping timestamps. 【F:src/data/walkforward.py†L170-L218】
+
+## Splitting strategy
+- **Walk-forward windows.** Configurable train/validation/test lengths, steps, and
+  embargo gaps are enforced through the walk-forward splitter. 【F:src/data/walkforward.py†L24-L118】
+- **Metadata capture.** Each window logs index ranges, embargo gaps, and calendar
+  configuration to support audit trails and reproduction. 【F:src/data/walkforward.py†L136-L158】
+
+## Quality checks and guardrails
+- **Leak detection.** Continuity checks raise an error if timestamps break the
+  forecast horizon contract; regression tests confirm the guard. 【F:src/data/walkforward.py†L162-L218】【F:tests/test_leak.py†L1-L74】
+- **Missing data handling.** Required feature/target columns must be present and
+  non-null before dataset creation, ensuring no silent NaN propagation. 【F:src/data/dataset.py†L96-L111】
+- **Calendar transparency.** Timezone and calendar settings accompany each split,
+  enabling reviewers to spot mismatches between market sessions and evaluation
+  periods. 【F:src/data/walkforward.py†L134-L156】
+
+## Fairness and responsible use
+- **Equal treatment across pairs.** Explicit filtering and erroring on missing
+  pairs prevent benchmarks from silently ignoring low-liquidity currencies. 【F:src/data/walkforward.py†L34-L68】
+- **Synthetic default.** Shipping synthetic data minimises privacy risk and keeps
+  the repository safe for public distribution; replace it only with datasets that
+  have cleared legal review.
+- **Use limitations.** Outputs are for research benchmarking only and should not
+  drive financial decisions without additional validation, governance, and risk
+  controls. 【F:docs/model_card.md†L10-L40】
+
+## Recommended citations
+Use the `CITATION.cff` metadata (see repository root) once the DOI minting step
+is complete; include dataset DOI or access statement if an alternative market
+feed is employed.
