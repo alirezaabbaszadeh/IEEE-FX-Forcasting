@@ -137,3 +137,29 @@ Aggregated reports are collated under
 `python scripts/reproduce_all.py --populate-only` to regenerate these placeholders
 without rebuilding tables and figures, or call the script without the flag to export
 full publication assets alongside the aggregate summaries.
+
+## Release archival workflow
+
+Follow this checklist when preparing an archival release (e.g., Zenodo) for the
+benchmark:
+
+1. **Regenerate publication assets.** Run
+   `python scripts/reproduce_all.py --manifest artifacts/paper_manifest.json` to
+   refresh tables/figures and capture a manifest that records every metrics
+   source, resolved config, and aggregate file.
+2. **Freeze configurations.** Copy the referenced resolved configs from
+   `artifacts/configs/` and the CLI entry scripts under `scripts/` into a
+   dedicated `release_bundle/` directory alongside `paper_outputs/`.
+3. **Verify provenance.** Double-check that each subdirectory under
+   `artifacts/runs/` contains the expected `metadata.json`, `metrics.json`, and
+   `resolved_config.yaml` payloads; these tie the deposit back to the originating
+   training runs.
+4. **Create an archive.** Zip the `release_bundle/` directory and upload it to
+   your archival service. Include the generated manifest JSON so that reviewers
+   can retrace which files produced the published tables.
+5. **Mint or update the DOI.** Once the upload is complete, record the minted
+   DOI in `CITATION.cff` and in the archival service metadata. If the DOI is still
+   pending, leave the placeholder value and update it post-publication.
+
+See `docs/BENCHMARK_CARD.md` for a narrative summary of these steps and links to
+responsible-use guidance.
