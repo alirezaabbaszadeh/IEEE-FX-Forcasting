@@ -1,7 +1,6 @@
-"""Compatibility layer for relocated walk-forward utilities."""
-from __future__ import annotations
+"""Utilities for time-series cross-validation and walk-forward splits."""
 
-from src.splits.walk_forward import (
+from .walk_forward import (
     WalkForwardConfig,
     WalkForwardDiagnostics,
     WalkForwardSplit,
@@ -9,6 +8,7 @@ from src.splits.walk_forward import (
     WalkForwardScheduler,
     WalkForwardWindow,
 )
+from .purged_cv import PurgedCVConfig, PurgedCVSplit, PurgedCVSplitter
 
 __all__ = [
     "WalkForwardConfig",
@@ -17,4 +17,7 @@ __all__ = [
     "WalkForwardSplitter",
     "WalkForwardScheduler",
     "WalkForwardWindow",
+    "PurgedCVConfig",
+    "PurgedCVSplit",
+    "PurgedCVSplitter",
 ]
