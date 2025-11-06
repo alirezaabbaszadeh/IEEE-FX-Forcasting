@@ -249,3 +249,22 @@ def test_hyperparameter_search_regression(tmp_path: Path, monkeypatch: pytest.Mo
         float(result["best_params"].get("amplitude", best_amplitude)), rel=1e-9
     )
 
+
+def test_hyperparameter_search_enforces_trial_limit(tmp_path: Path) -> None:
+    runner = MultiRunExperiment(_dummy_run, num_runs=5, base_seed=0)
+    base_config = {"base": 0.5, "governance": {"max_hpo_trials": {"_default": 2}}}
+    search_space = {"base": {"type": "float", "low": 0.4, "high": 0.6}}
+
+    search = HyperparameterSearch(
+        runner,
+        base_config=base_config,
+        search_space=search_space,
+        metric="val_score",
+        run_id="limited",
+        output_dir=tmp_path,
+        direction="maximize",
+    )
+
+    with pytest.raises(ValueError):
+        search.optimize(n_trials=3, sampler="sobol")
+

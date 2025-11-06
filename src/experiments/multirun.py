@@ -9,7 +9,7 @@ import shutil
 from datetime import datetime, timezone
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Iterable, Mapping, Sequence, TYPE_CHECKING
+from typing import Callable, Iterable, Mapping, MutableMapping, Sequence, TYPE_CHECKING
 
 try:  # pragma: no cover - optional dependency for precise statistics
     from scipy import stats as _scipy_stats
@@ -208,7 +208,21 @@ def _ensure_manifest(run_dir: Path, metadata: Mapping[str, object] | None) -> Pa
     return manifest_path
 
 
-def _write_compute_log(run_dir: Path, result: RunResult) -> Path:
+def _write_compute_csv(run_dir: Path, compute: Mapping[str, float] | None) -> Path | None:
+    if not compute:
+        return None
+
+    compute_path = run_dir / "compute.csv"
+    fieldnames = sorted(compute.keys())
+    compute_path.parent.mkdir(parents=True, exist_ok=True)
+    with compute_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerow({name: compute.get(name, float("nan")) for name in fieldnames})
+    return compute_path
+
+
+def _write_compute_log(run_dir: Path, result: RunResult) -> tuple[Path, Path | None, dict[str, float]]:
     compute_path = run_dir / "compute.json"
     epochs = list(result.summary.epochs)
     payload = {
@@ -233,9 +247,14 @@ def _write_compute_log(run_dir: Path, result: RunResult) -> Path:
     deterministic = result.metadata.get("deterministic_flags") if isinstance(result.metadata, Mapping) else None
     if deterministic:
         payload["deterministic_flags"] = deterministic
+    compute_stats: dict[str, float] = {}
+    if getattr(result.summary, "compute", None) is not None:
+        compute_stats = result.summary.compute.as_dict()  # type: ignore[assignment]
+        payload["monitoring"] = compute_stats
     with compute_path.open("w", encoding="utf-8") as handle:
         json.dump(payload, handle, indent=2, sort_keys=True)
-    return compute_path
+    compute_csv_path = _write_compute_csv(run_dir, compute_stats)
+    return compute_path, compute_csv_path, compute_stats
 
 
 def _write_run_artifacts(
@@ -267,15 +286,18 @@ def _write_run_artifacts(
         project_root=project_root,
     )
     manifest_path = _ensure_manifest(run_dir, run_metadata)
-    compute_path = _write_compute_log(run_dir, result)
+    compute_json_path, compute_csv_path, compute_stats = _write_compute_log(run_dir, result)
 
     artifact_index = {
         "metrics": metrics_path.name,
         "metadata": "metadata.json",
         "manifest": manifest_path.name,
-        "compute": compute_path.name,
+        "compute": compute_json_path.name,
         "resolved_config": resolved_config_path.name,
     }
+
+    if compute_csv_path is not None:
+        artifact_index["compute_csv"] = compute_csv_path.name
 
     if split_records:
         artifact_index["splits"] = "splits.csv"
@@ -289,11 +311,14 @@ def _write_run_artifacts(
         dataset_checksums=dataset_checksums,
     )
 
+    if compute_stats:
+        metadata_payload["compute"] = compute_stats
+
     metadata_path = run_dir / "metadata.json"
     with metadata_path.open("w", encoding="utf-8") as handle:
         json.dump(metadata_payload, handle, indent=2, sort_keys=True)
 
-    return metrics, metadata_payload
+    return metrics, metadata_payload, compute_stats
 
 
 def _write_summary(output_dir: Path, aggregated: dict[str, dict[str, float]]) -> None:
@@ -325,12 +350,21 @@ def run_multirun(
 
     for seed in seeds:
         result = runner(seed)
-        metrics, run_metadata = _write_run_artifacts(output_dir, result, base_metadata=base_metadata)
+        metrics, run_metadata, compute_stats = _write_run_artifacts(
+            output_dir, result, base_metadata=base_metadata
+        )
         if representative_metadata is None:
             representative_metadata = dict(run_metadata)
         for metric_name, value in metrics.items():
             collected_metrics.setdefault(metric_name, []).append(value)
-        run_records.append({"seed": seed, "metrics": metrics, "metadata": run_metadata})
+        run_records.append(
+            {
+                "seed": seed,
+                "metrics": metrics,
+                "metadata": run_metadata,
+                "compute": compute_stats,
+            }
+        )
 
     for metric_name, values in collected_metrics.items():
         aggregated[metric_name] = _compute_stats(values)
@@ -356,6 +390,9 @@ def run_multirun(
     if run_entries:
         metadata_blob["artifacts"]["compute"] = f"{run_entries[0]}/compute.json"
         metadata_blob["artifacts"]["resolved_config"] = f"{run_entries[0]}/resolved_config.yaml"
+        first_compute_csv = output_dir / run_entries[0] / "compute.csv"
+        if first_compute_csv.exists():
+            metadata_blob["artifacts"]["compute_csv"] = f"{run_entries[0]}/compute.csv"
     metadata_path = output_dir / "metadata.json"
     with metadata_path.open("w", encoding="utf-8") as handle:
         json.dump(metadata_blob, handle, indent=2, sort_keys=True)

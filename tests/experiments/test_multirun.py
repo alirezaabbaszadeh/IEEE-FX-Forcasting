@@ -11,6 +11,7 @@ from typing import List
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 
 from src.experiments.multirun import RunResult, run_multirun
+from src.training.engine import ComputeStats
 
 
 @dataclass
@@ -25,10 +26,24 @@ class _Summary:
     epochs: List[_Epoch]
     best_val_loss: float
     device: str = "cpu"
+    compute: ComputeStats | None = None
 
 
 def _make_summary(*, best: float, final_loss: float, final_mae: float) -> _Summary:
-    return _Summary(epochs=[_Epoch(train_loss=1.0, val_loss=final_loss, val_mae=final_mae)], best_val_loss=best)
+    compute = ComputeStats(
+        wall_time_s=12.0,
+        cpu_rss_mb_mean=512.0,
+        cpu_rss_mb_peak=520.0,
+        gpu_utilization_mean=float("nan"),
+        gpu_utilization_max=float("nan"),
+        gpu_memory_mb_peak=float("nan"),
+        samples=4,
+    )
+    return _Summary(
+        epochs=[_Epoch(train_loss=1.0, val_loss=final_loss, val_mae=final_mae)],
+        best_val_loss=best,
+        compute=compute,
+    )
 
 
 def test_run_multirun_writes_expected_layout(tmp_path: Path) -> None:
@@ -69,6 +84,8 @@ def test_run_multirun_writes_expected_layout(tmp_path: Path) -> None:
         assert metadata["artifacts"]["metadata"] == "metadata.json"
         assert metadata["artifacts"]["resolved_config"] == "resolved_config.yaml"
         assert metadata["artifacts"]["compute"] == "compute.json"
+        assert metadata["artifacts"]["compute_csv"] == "compute.csv"
+        assert "compute" in metadata
 
         resolved_path = seed_dir / "resolved_config.yaml"
         assert resolved_path.exists()
@@ -82,6 +99,11 @@ def test_run_multirun_writes_expected_layout(tmp_path: Path) -> None:
         compute_payload = json.loads((seed_dir / "compute.json").read_text())
         assert compute_payload["seed"] == seed
         assert compute_payload["epochs"] == len(summaries[seed].epochs)
+        compute_csv = seed_dir / "compute.csv"
+        assert compute_csv.exists()
+        csv_rows = list(csv.DictReader(compute_csv.open()))
+        assert csv_rows
+        assert "wall_time_s" in csv_rows[0]
 
     summary_path = tmp_path / "summary.csv"
     assert summary_path.exists()
@@ -110,6 +132,7 @@ def test_run_multirun_writes_expected_layout(tmp_path: Path) -> None:
     aggregate_dir = tmp_path / "aggregates"
     assert (aggregate_dir / "aggregate.csv").exists()
     assert (aggregate_dir / "calibration.csv").exists()
+    assert (aggregate_dir / "compute.csv").exists()
     assert (aggregate_dir / "dm_table.csv").exists()
     assert (aggregate_dir / "spa_table.csv").exists()
     assert (aggregate_dir / "mcs_table.csv").exists()

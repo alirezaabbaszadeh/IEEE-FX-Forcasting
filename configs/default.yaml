@@ -5,6 +5,7 @@ defaults:
   - schema/training
   - schema/interpret
   - schema/multirun
+  - schema/governance
 
 seed: 42
 
@@ -62,3 +63,15 @@ interpret:
   model_factory: build_model
   output_dir: artifacts/interpretability
   runs: []
+
+governance:
+  max_epochs:
+    temporal_transformer: 12
+    lstm_light: 8
+    arima: 4
+    ets: 4
+    _default: 16
+  max_hpo_trials:
+    temporal_transformer: 32
+    lstm_light: 24
+    _default: 40

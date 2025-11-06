@@ -46,6 +46,7 @@ class Trial:
     number: int
     sampler: _BaseSampler
     params: Dict[str, Any] = field(default_factory=dict)
+    user_attrs: Dict[str, Any] = field(default_factory=dict)
 
     def suggest_float(self, name: str, low: float, high: float, *, log: bool = False) -> float:
         value = self.sampler.sample_float(low, high, log)
@@ -61,6 +62,9 @@ class Trial:
         value = self.sampler.sample_categorical(choices)
         self.params[name] = value
         return value
+
+    def set_user_attr(self, name: str, value: Any) -> None:
+        self.user_attrs[name] = value
 
 
 class Study:

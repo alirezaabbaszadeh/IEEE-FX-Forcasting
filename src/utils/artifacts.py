@@ -124,4 +124,8 @@ def build_run_metadata(
     if artifact_index:
         payload["artifacts"] = dict(artifact_index)
 
+    baseline_metrics = metadata.get("baseline_metrics")
+    if isinstance(baseline_metrics, Mapping):
+        payload["baseline_metrics"] = dict(baseline_metrics)
+
     return dict(payload)

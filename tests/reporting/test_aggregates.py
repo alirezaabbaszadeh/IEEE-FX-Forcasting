@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from src.experiments.multirun import RunResult, run_multirun
+from src.training.engine import ComputeStats
 from src.reporting.aggregates import collate_run_group
 
 
@@ -23,10 +24,24 @@ class _Summary:
     epochs: list[_Epoch]
     best_val_loss: float
     device: str = "cpu"
+    compute: ComputeStats | None = None
 
 
 def _build_summary(best: float, final_loss: float, final_mae: float) -> _Summary:
-    return _Summary(epochs=[_Epoch(train_loss=1.0, val_loss=final_loss, val_mae=final_mae)], best_val_loss=best)
+    compute = ComputeStats(
+        wall_time_s=8.0,
+        cpu_rss_mb_mean=256.0,
+        cpu_rss_mb_peak=260.0,
+        gpu_utilization_mean=float("nan"),
+        gpu_utilization_max=float("nan"),
+        gpu_memory_mb_peak=float("nan"),
+        samples=3,
+    )
+    return _Summary(
+        epochs=[_Epoch(train_loss=1.0, val_loss=final_loss, val_mae=final_mae)],
+        best_val_loss=best,
+        compute=compute,
+    )
 
 
 def test_collate_run_group_emits_expected_tables(tmp_path: Path) -> None:
@@ -53,6 +68,7 @@ def test_collate_run_group_emits_expected_tables(tmp_path: Path) -> None:
                 **base_metadata,
                 "device": "cpu",
                 "deterministic_flags": {"deterministic_algorithms": True},
+                "baseline_metrics": {"val": {"mse": 1.0}},
             },
         )
 
@@ -60,7 +76,7 @@ def test_collate_run_group_emits_expected_tables(tmp_path: Path) -> None:
     assert aggregated
 
     outputs = collate_run_group(run_root)
-    expected_keys = {"aggregate", "calibration", "dm_table", "spa_table", "mcs_table"}
+    expected_keys = {"aggregate", "calibration", "compute_efficiency", "dm_table", "spa_table", "mcs_table"}
     assert expected_keys.issubset(outputs.keys())
 
     aggregates_dir = tmp_path / "artifacts" / "aggregates" / "demo_model" / "abc123" / "eurusd_1" / "window-000"
@@ -71,6 +87,12 @@ def test_collate_run_group_emits_expected_tables(tmp_path: Path) -> None:
         assert path.read_text().strip() != ""
         assert path.parent == aggregates_dir
 
+    html_report = tmp_path / "paper_outputs" / "report.html"
+    assert html_report.exists()
+    report_html = html_report.read_text()
+    assert "Compute Efficiency Report" in report_html
+    assert "ΔMSE" in report_html
+
     with (aggregates_dir / "aggregate.csv").open() as handle:
         rows = list(csv.DictReader(handle))
     assert rows
@@ -80,3 +102,7 @@ def test_collate_run_group_emits_expected_tables(tmp_path: Path) -> None:
     assert compute_path.exists()
     compute_payload = json.loads(compute_path.read_text())
     assert compute_payload["seed"] == 3
+    compute_csv = run_root / "seed-3" / "compute.csv"
+    assert compute_csv.exists()
+    compute_rows = list(csv.DictReader(compute_csv.open()))
+    assert compute_rows

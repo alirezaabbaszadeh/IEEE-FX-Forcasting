@@ -6,8 +6,10 @@ import importlib
 import json
 import logging
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, List, Mapping, Optional, Tuple
+import csv
 
 import hydra
 import pandas as pd
@@ -151,6 +153,7 @@ def _persist_split_audit(output_dir: Path, dataset_metadata: Mapping[str, object
 
 def _build_model_config(cfg: DictConfig, input_features: int, time_steps: int) -> ModelConfig:
     return ModelConfig(
+        model_name=str(cfg.get("name", "temporal_transformer")),
         input_features=input_features,
         time_steps=time_steps,
         hidden_size=cfg.hidden_size,
@@ -240,6 +243,42 @@ def _build_trainer_config(cfg: DictConfig) -> TrainerConfig:
         log_interval=cfg.log_interval,
         device=cfg.device,
     )
+
+
+def _normalise_model_name(raw_name: object) -> str:
+    return str(raw_name or "model").strip().lower()
+
+
+def _lookup_budget(
+    governance_cfg: Mapping[str, Any] | None, key: str, model_name: str
+) -> int | None:
+    if governance_cfg is None:
+        return None
+    bucket = governance_cfg.get(key)
+    if bucket is None:
+        return None
+    if isinstance(bucket, DictConfig):
+        container = OmegaConf.to_container(bucket, resolve=True)
+    else:
+        container = bucket
+    if not isinstance(container, Mapping):
+        return None
+    model_key = _normalise_model_name(model_name)
+    if model_key in container and container[model_key] is not None:
+        return int(container[model_key])
+    for fallback in ("_default", "default"):
+        if fallback in container and container[fallback] is not None:
+            return int(container[fallback])
+    return None
+
+
+def _enforce_epoch_budget(cfg: DictConfig, model_name: str, epochs: int) -> None:
+    governance_cfg = cfg.get("governance")
+    limit = _lookup_budget(governance_cfg, "max_epochs", model_name)
+    if limit is not None and epochs > int(limit):
+        raise ValueError(
+            f"Requested {epochs} epochs for model '{model_name}' exceeds governance limit {limit}"
+        )
 
 
 def _prepare_metadata(cfg: DictConfig, *, original_cwd: Path) -> dict[str, object]:
@@ -555,6 +594,7 @@ def _run_training_once(
 
     if model is not None:
         trainer_cfg = _build_trainer_config(cfg.training)
+        _enforce_epoch_budget(cfg, model_name, trainer_cfg.epochs)
         summary = train(
             model,
             dataloaders,
@@ -801,11 +841,50 @@ def _write_single_run_artifacts(output_dir: Path, result: RunResult) -> None:
     dataset_meta = dict(metadata.get("dataset") or {})
     _persist_split_audit(output_dir, dataset_meta)
 
+    compute_json_path = output_dir / "compute.json"
+    epochs = list(result.summary.epochs)
+    compute_payload: dict[str, object] = {
+        "seed": result.seed,
+        "device": result.summary.device or metadata.get("device"),
+        "epochs": len(epochs),
+        "best_val_loss": result.summary.best_val_loss,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "steps": [
+            {
+                "epoch": index,
+                "train_loss": epoch_metrics.train_loss,
+                "val_loss": epoch_metrics.val_loss,
+                "val_mae": epoch_metrics.val_mae,
+            }
+            for index, epoch_metrics in enumerate(epochs, start=1)
+        ],
+    }
+
+    compute_stats: dict[str, float] = {}
+    if getattr(result.summary, "compute", None) is not None:
+        compute_stats = result.summary.compute.as_dict()  # type: ignore[assignment]
+        compute_payload["monitoring"] = compute_stats
+    with compute_json_path.open("w", encoding="utf-8") as handle:
+        json.dump(compute_payload, handle, indent=2, sort_keys=True)
+
+    compute_csv_path: Path | None = None
+    if compute_stats:
+        compute_csv_path = output_dir / "compute.csv"
+        fieldnames = sorted(compute_stats.keys())
+        with compute_csv_path.open("w", encoding="utf-8", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerow({name: compute_stats.get(name, float("nan")) for name in fieldnames})
+
     artifact_index: dict[str, object] = {
         "metrics": metrics_path.name,
         "metadata": "metadata.json",
         "manifest": "manifest.json",
+        "compute": compute_json_path.name,
     }
+
+    if compute_csv_path is not None:
+        artifact_index["compute_csv"] = compute_csv_path.name
 
     if dataset_meta.get("split_records"):
         artifact_index["splits"] = "splits.csv"
@@ -838,6 +917,9 @@ def _write_single_run_artifacts(output_dir: Path, result: RunResult) -> None:
         artifact_index=artifact_index,
         dataset_checksums=dataset_checksums,
     )
+
+    if compute_stats:
+        metadata_payload["compute"] = compute_stats
 
     metadata_path = output_dir / "metadata.json"
     with metadata_path.open("w", encoding="utf-8") as handle:

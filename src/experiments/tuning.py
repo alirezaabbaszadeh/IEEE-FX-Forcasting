@@ -105,6 +105,7 @@ class HyperparameterTuner:
         run_id: str,
         output_dir: Path | str = Path("artifacts") / "hparam",
         evaluation_kwargs: Mapping[str, Any] | None = None,
+        governance: Mapping[str, Any] | None = None,
     ) -> None:
         if not windows:
             raise ValueError("At least one evaluation window must be supplied")
@@ -130,6 +131,8 @@ class HyperparameterTuner:
             *(f"model.{name}" for name in search_space.model.keys()),
             *(f"training.{name}" for name in search_space.training.keys()),
         ]
+        self._governance = dict(governance or {})
+        self._model_name = getattr(base_model_cfg, "model_name", "model")
 
     @property
     def evaluation_seeds(self) -> tuple[int, ...]:
@@ -149,6 +152,7 @@ class HyperparameterTuner:
         run_id: str,
         output_dir: Path | str = Path("artifacts") / "hparam",
         evaluation_kwargs: Mapping[str, Any] | None = None,
+        governance: Mapping[str, Any] | None = None,
     ) -> "HyperparameterTuner":
         """Construct a tuner from a YAML search definition."""
 
@@ -162,6 +166,7 @@ class HyperparameterTuner:
             run_id=run_id,
             output_dir=output_dir,
             evaluation_kwargs=evaluation_kwargs,
+            governance=governance,
         )
 
     # ------------------------------------------------------------------
@@ -169,6 +174,33 @@ class HyperparameterTuner:
     # ------------------------------------------------------------------
     def optimize(self, n_trials: int) -> Dict[str, Any]:
         """Launch the Sobol search and persist artefacts."""
+
+        def _extract_limit(source: Mapping[str, Any] | None) -> int | None:
+            if not source:
+                return None
+            mapping: Mapping[str, Any] | Any = source
+            if isinstance(mapping, Mapping) and "max_hpo_trials" in mapping:
+                mapping = mapping["max_hpo_trials"]
+            if isinstance(mapping, Mapping):
+                key = str(self._model_name).lower()
+                if key in mapping and mapping[key] is not None:
+                    return int(mapping[key])
+                for fallback in ("_default", "default"):
+                    if fallback in mapping and mapping[fallback] is not None:
+                        return int(mapping[fallback])
+            elif isinstance(mapping, (int, float)):
+                return int(mapping)
+            return None
+
+        limit = _extract_limit(self._governance)
+        if limit is None:
+            limit = _extract_limit(getattr(self.base_model_cfg, "governance", None))
+        if limit is None:
+            limit = _extract_limit(getattr(self.base_trainer_cfg, "governance", None))
+        if limit is not None and n_trials > int(limit):
+            raise ValueError(
+                f"Requested {n_trials} trials for model '{self._model_name}' exceeds governance limit {limit}"
+            )
 
         sampler = self._create_sampler()
         study = optuna.create_study(direction=self.direction, sampler=sampler)

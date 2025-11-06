@@ -20,6 +20,7 @@ class ModelConfig:
 
     input_features: int
     time_steps: int
+    model_name: str = "temporal_transformer"
     hidden_size: int = 128
     conv_kernel_size: int = 3
     num_blocks: int = 2

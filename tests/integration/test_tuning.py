@@ -4,8 +4,9 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pytest
 
-from src.experiments.tuning import HyperparameterTuner
+from src.experiments.tuning import HyperparameterTuner, SearchSpaceConfig
 from src.models.forecasting import ModelConfig
 from src.training.engine import TrainerConfig
 
@@ -107,4 +108,33 @@ evaluation:
         expected_df.groupby("trial")["mean"].mean().sort_index().to_numpy()
     )
     np.testing.assert_allclose(results_df.sort_values("trial")["value"].to_numpy(), computed_values)
+
+
+def test_tuner_respects_trial_limit(tmp_path: Path) -> None:
+    base_model = ModelConfig(input_features=4, time_steps=16)
+    base_trainer = TrainerConfig()
+    windows = {"w0": 0.1, "w1": 0.2}
+    search_space = SearchSpaceConfig(
+        model={},
+        training={},
+        metric="val_score",
+        direction="maximize",
+        seeds=[0, 1, 2, 3, 4],
+        top_k=1,
+        sampler_seed=None,
+    )
+
+    tuner = HyperparameterTuner(
+        _evaluation_fn,
+        base_model_cfg=base_model,
+        base_trainer_cfg=base_trainer,
+        windows=windows,
+        search_space=search_space,
+        run_id="limit_case",
+        output_dir=tmp_path / "artifacts",
+        governance={"max_hpo_trials": {"temporal_transformer": 1}},
+    )
+
+    with pytest.raises(ValueError):
+        tuner.optimize(n_trials=2)
 
