@@ -9,6 +9,7 @@ import pytest
 import torch
 
 from src.data.loader import FXDataLoader, FXDataLoaderConfig
+from src.data.dataset import DataConfig, TimezoneConfig, WalkForwardSettings, prepare_datasets
 from src.eval.scheduler import WalkForwardConfig, WalkForwardScheduler
 
 
@@ -131,3 +132,45 @@ def test_walk_forward_scheduler_embargo() -> None:
         assert np.array_equal(mapping["train"], window.train)
         assert np.array_equal(mapping["val"], window.val)
         assert np.array_equal(mapping["test"], window.test)
+
+
+def test_prepare_datasets_handles_dst_fallback(tmp_path: Path) -> None:
+    timezone = "America/New_York"
+    timestamps = pd.date_range(
+        "2020-11-01 00:00",
+        periods=12,
+        freq="30min",
+        tz=timezone,
+    )
+    values = np.linspace(1.0, 2.1, len(timestamps))
+    frame = pd.DataFrame(
+        {
+            "timestamp": timestamps,
+            "pair": "EURUSD",
+            "open": values,
+            "high": values + 0.1,
+            "low": values - 0.1,
+            "close": values + 0.05,
+        }
+    )
+    csv_path = tmp_path / "dst_fallback.csv"
+    frame.to_csv(csv_path, index=False)
+
+    cfg = DataConfig(
+        csv_path=csv_path,
+        feature_columns=["open", "high", "low", "close"],
+        target_column="close",
+        timestamp_column="timestamp",
+        pair_column="pair",
+        pairs=["EURUSD"],
+        horizons=[1],
+        time_steps=4,
+        batch_size=8,
+        num_workers=0,
+        shuffle_train=False,
+        timezone=TimezoneConfig(source=timezone, normalise_to=timezone),
+        walkforward=WalkForwardSettings(train=6, val=3, test=3, step=3, embargo=0),
+    )
+
+    datasets = prepare_datasets(cfg)
+    assert datasets

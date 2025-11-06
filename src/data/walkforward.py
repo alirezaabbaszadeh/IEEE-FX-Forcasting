@@ -96,8 +96,6 @@ class WalkForwardSplitter:
             timestamps = timestamps.dt.tz_convert(source_tz)
 
         timestamps = timestamps.dt.tz_convert(target_tz)
-        timestamps = timestamps.dt.tz_localize(None)
-        timestamps = timestamps.dt.tz_localize(target_tz)
 
         frame = df.copy()
         frame[self.cfg.timestamp_column] = timestamps
