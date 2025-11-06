@@ -1,62 +1,53 @@
 # FX Forecasting Research Plan
 
 ## Overview
-This document distills the brainstorming ideas into an actionable roadmap for extending the
-IEEE FX Forecasting project toward competitive DMLR benchmarks and a potential TMLR
-submission. The plan balances quick wins, medium-effort upgrades, and ambitious
-experiments while enforcing rigorous evaluation and compute accounting.
+This document captures prioritized research directions extracted from recent brainstorming
+sessions. The goal is to guide development toward a DMLR benchmark submission while keeping
+room for one or two TMLR-grade contributions.
 
-## Prioritized initiatives
+## Immediate Priorities
 1. **Purged Conformal Calibration (PCC)**
-   - Build conformal prediction intervals that respect purged and embargoed splits.
-   - Target: ±2–3% coverage error at 90/95% while lowering CRPS compared with baseline
-     quantile heads.
-   - Hooks: `src/inference/conformal_purged.py`, `configs/inference/pcc.yaml`,
-     `calibration_cli.py`.
+   - Implement leakage-aware conformal prediction for interval calibration.
+   - Evaluate coverage at 90/95% alongside CRPS on purged validation splits.
+   - Target configuration files under `configs/inference/pcc.yaml` and supporting code in
+     `src/inference/conformal_purged.py` and `calibration_cli.py`.
 2. **Regime-Conditioned Quantile Forecasting (RCQF)**
-   - Add volatility regime labels and a gating head to shrink quantile error under regime
-     shifts.
-   - Target: 2% CRPS reduction with better high-volatility coverage and PIT uniformity.
-   - Hooks: `src/features/regime_labels.py`, `src/models/deep/rcqf.py`,
-     `configs/agent/rcqf.yaml`.
+   - Add volatility regime labels via `src/features/regime_labels.py`.
+   - Extend the lightweight LSTM architecture with a gating head in
+     `src/models/deep/rcqf.py` using quantile targets τ∈{0.05, 0.5, 0.95}.
+   - Track impact on CRPS, pinball loss, and coverage diagnostics.
 3. **Purged Stacking Ensemble**
-   - Train a meta-learner on embargo-respecting out-of-fold predictions from diverse base
-     models.
-   - Target: 1–3% improvements in MASE and CRPS with SPA evidence of superiority.
-   - Hooks: `src/inference/stacking_purged.py`, `configs/inference/stacking.yaml`.
-4. **Calibration Diagnostics Pack**
-   - Provide PIT, coverage, and sharpness plots plus CRPS/Pinball metrics for every
-     experiment.
-   - Hooks: `src/metrics/calibration.py`, `src/reporting/plots.py`.
-5. **Compute Governance and Statistical Safeguards**
-   - Enforce equal compute budgets, log resource usage, and run SPA/MCS for multi-model
-     comparisons.
-   - Hooks: `src/utils/manifest.py`, `paper_outputs/compute.csv`, `src/stats/spa.py`,
-     `src/stats/mcs.py`.
+   - Combine ARIMA, ETS, LSTM-light, and TCN via a purged meta-learner placed in
+     `src/inference/stacking_purged.py`.
+   - Ensure embargoed cross-validation when generating out-of-fold predictions.
 
-## Experimental funnel
-- **Smoke tests**: 1 pair × 1 horizon × 5 seeds (≤3 GPU hours per model).
-- **Mini-benchmark**: 3 pairs × 2 horizons × 10 seeds (2–3 days total compute).
-- **Full benchmark**: 7 pairs × 3 horizons × 10 seeds for publication-ready results.
+## Supporting Infrastructure
+- **Calibration Diagnostics Pack**: centralize PIT histograms, coverage vs. nominal plots, and
+  sharpness reports under `src/metrics/calibration.py` and `src/reporting/plots.py`.
+- **Statistical Validity (SPA/MCS)**: add HAC-aware Superior Predictive Ability and Model
+  Confidence Set routines within `src/stats/` to accompany benchmark tables.
+- **Compute Governance**: record training and inference budgets in `paper_outputs/compute.csv`
+  using utilities in `src/utils/manifest.py` to guarantee fair model comparisons.
 
-## Decision gates
-1. **Protocol freeze (DMLR)**: Lock splits, metrics, and compute caps.
-2. **Benchmark release (v1.0)**: Archive artifacts and publish benchmark card.
-3. **Claim freeze (TMLR)**: Choose a single headline method post mini-benchmark; reserve
-   the final test set until this point.
+## Evaluation Funnel
+1. **Smoke Bench**: 1 pair × 1 horizon × 5 seeds, ≤3 GPU hours per model.
+2. **Mini Bench**: 3 pairs × 2 horizons × 10 seeds, 2–3 days of wall-clock time.
+3. **Full Bench**: 7 pairs × 3 horizons × 10 seeds for final paper artifacts.
 
-## Measurement suite
-- Point accuracy: MAE, RMSE, MASE.
-- Probabilistic quality: CRPS, Pinball at multiple quantiles, coverage@90/95, PIT
-  diagnostics.
-- Statistical validation: DM with HAC, Superior Predictive Ability (SPA), Model Confidence
-  Set (MCS), and optional Probability of Backtest Overfitting (PBO).
-- Compute tracking: training/inference time, peak memory, improvement per compute unit.
+Gate releases:
+- **G1 Protocol Freeze** for DMLR submission.
+- **G2 Benchmark Release** tagged `v1.0` with archival artifacts.
+- **G3 Claim Freeze** preceding TMLR analyses to avoid test-set leakage.
 
-## Risk controls
-- Audit all data splits with automated tests to eliminate leakage.
-- Enforce HPO and epoch caps; fail runs that exceed the budget.
-- Define ablation grids up front and report SPA/MCS to avoid cherry-picking.
-- Apply quantile monotonicity fixes when forecasting multiple quantiles.
-- Maintain reproducible scripts (`scripts/reproduce_all.sh`) for all reported tables and
-  figures.
+## Success Metrics
+- Achieve ≥2% average CRPS improvement or ≥2–3% coverage error reduction in at least half of
+  evaluated pair-horizon cells.
+- Maintain MASE while improving probabilistic calibration.
+- Pass SPA/MCS tests for the promoted method without violating compute budgets.
+
+## Risk Mitigation
+- Create `tests/test_leak.py` to monitor purged split integrity.
+- Enforce training time and hyperparameter sweep caps to curb compute drift.
+- Apply quantile monotonicity correction via `src/inference/quantile_fix.py` to remove interval
+  crossings when necessary.
+
