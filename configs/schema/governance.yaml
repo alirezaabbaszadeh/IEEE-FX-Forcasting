@@ -1,0 +1,4 @@
+# @package governance
+
+max_epochs: {}
+max_hpo_trials: {}

@@ -53,6 +53,7 @@ class HyperparameterSearch:
         num_runs: int = 5,
         base_seed: int = 0,
         top_k: int = 5,
+        governance: Mapping[str, Any] | None = None,
     ) -> None:
         if isinstance(run_fn, MultiRunExperiment):
             self.runner = run_fn
@@ -69,11 +70,50 @@ class HyperparameterSearch:
         self._artifact_root = self.output_dir / "hparam" / self.run_id
         self._trials_dir = self._artifact_root / "trials"
         self._multirun_root = self._artifact_root / "multirun"
+        self._governance = dict(governance or {})
 
     @staticmethod
     def _hash_config(config: Mapping[str, Any]) -> str:
         payload = json.dumps(config, sort_keys=True).encode("utf-8")
         return hashlib.sha256(payload).hexdigest()[:16]
+
+    def _resolve_model_name(self) -> str | None:
+        model_cfg = self.base_config.get("model")
+        if isinstance(model_cfg, Mapping):
+            name = model_cfg.get("name")
+            if isinstance(name, str):
+                return name.lower()
+        model_name = self.base_config.get("model_name")
+        if isinstance(model_name, str):
+            return model_name.lower()
+        return None
+
+    def _lookup_trial_limit(self) -> tuple[str, int | None]:
+        model_name = self._resolve_model_name() or "model"
+
+        def _extract(source: Mapping[str, Any] | None) -> int | None:
+            if not source:
+                return None
+            mapping: Mapping[str, Any] | Any = source
+            if isinstance(mapping, Mapping) and "max_hpo_trials" in mapping:
+                mapping = mapping["max_hpo_trials"]
+            if isinstance(mapping, Mapping):
+                key = model_name.lower()
+                if key in mapping and mapping[key] is not None:
+                    return int(mapping[key])
+                for fallback in ("_default", "default"):
+                    if fallback in mapping and mapping[fallback] is not None:
+                        return int(mapping[fallback])
+            elif isinstance(mapping, (int, float)):
+                return int(mapping)
+            return None
+
+        limit = _extract(self._governance)
+        if limit is None:
+            governance_cfg = self.base_config.get("governance")
+            if isinstance(governance_cfg, Mapping):
+                limit = _extract(governance_cfg)
+        return model_name, limit
 
     def _suggest_parameters(self, trial) -> Dict[str, Any]:
         config = copy.deepcopy(self.base_config)
@@ -144,6 +184,12 @@ class HyperparameterSearch:
         self._trials_dir.mkdir(parents=True, exist_ok=True)
         self._multirun_root.mkdir(parents=True, exist_ok=True)
         self._trial_records = []
+
+        model_name, trial_limit = self._lookup_trial_limit()
+        if trial_limit is not None and n_trials > int(trial_limit):
+            raise ValueError(
+                f"Requested {n_trials} trials for model '{model_name}' exceeds governance limit {trial_limit}"
+            )
 
         if sampler.lower() == "sobol":
             if hasattr(optuna.samplers, "SobolSampler"):
