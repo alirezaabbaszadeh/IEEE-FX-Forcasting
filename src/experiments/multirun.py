@@ -150,6 +150,7 @@ def _write_run_artifacts(output_dir: Path, result: RunResult) -> tuple[dict[str,
     artifact_index = {
         "metrics": metrics_path.name,
         "metadata": "metadata.json",
+        "manifest": "manifest.json",
     }
 
     run_metadata = dict(result.metadata)

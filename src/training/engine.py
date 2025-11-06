@@ -2,8 +2,11 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Dict, Iterable, Optional, TYPE_CHECKING
+
+from src.utils.manifest import write_manifest
 
 LOGGER = logging.getLogger(__name__)
 
@@ -111,6 +114,8 @@ def train(
     dataloaders: Dict[str, DataLoader],
     cfg: TrainerConfig,
     metadata: Optional[dict[str, object]] = None,
+    *,
+    manifest_path: Path | None = None,
 ) -> TrainingSummary:
     """Train a model using mean-squared-error loss and report validation metrics."""
 
@@ -123,6 +128,11 @@ def train(
         metadata = {}
     metadata.setdefault("device", str(device))
     _log_training_metadata(metadata)
+    if manifest_path is not None:
+        try:
+            write_manifest(manifest_path, metadata)
+        except Exception:  # pragma: no cover - defensive: manifest must not break training
+            LOGGER.exception("Failed to write training manifest to %s", manifest_path)
     model.to(device)
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.learning_rate, weight_decay=cfg.weight_decay)
