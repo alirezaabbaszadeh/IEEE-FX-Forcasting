@@ -16,3 +16,8 @@ forecasting horizon ahead of its target timestamp. When this guard raises a `Val
 
 Run `pytest tests/test_leak.py` locally to reproduce the failure after applying fixes. The leak guard
 is enforced automatically by the CI workflows, so merges will be blocked until the test passes.
+
+## PCC claim freeze process
+
+When preparing contributions that touch the PCC stack, review `docs/pcc_claim_freeze.md` to confirm the
+validated hyperparameters and ≥2% improvement gates remain intact before introducing new variants.
