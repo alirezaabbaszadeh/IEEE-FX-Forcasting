@@ -7,3 +7,4 @@ __pycache__/
 outputs/
 .venv/
 artifacts/benchmark/
+paper_outputs/*.pdf
