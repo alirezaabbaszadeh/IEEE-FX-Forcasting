@@ -1,0 +1,7 @@
+{
+  "reliability": "pcc_reliability_curve.svg",
+  "ablation_table": "pcc_ablation_table.csv",
+  "ablation_figure": "pcc_ablation_bars.svg",
+  "regime_table": "pcc_regime_gains.csv",
+  "regime_figure": "pcc_regime_heatmap.svg"
+}

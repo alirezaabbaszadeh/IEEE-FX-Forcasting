@@ -1,0 +1,4 @@
+variant,crps,coverage_error,regime,notes,crps_improvement_pct,coverage_improvement_pct
+Baseline,0.212,0.048,Mixed,Uncalibrated predictive intervals,0.0,0.0
+PCC + Embargo,0.198,0.026,Mixed,Purged overlapping windows to limit leakage,6.6,45.83
+PCC + Embargo + Weights,0.189,0.019,Mixed,Exponential decay emphasises most recent trades,10.85,60.42
