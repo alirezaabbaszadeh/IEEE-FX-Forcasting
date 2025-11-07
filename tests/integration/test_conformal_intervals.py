@@ -122,3 +122,59 @@ def test_run_evaluation_rejects_pre_freeze_test_access(tmp_path: Path) -> None:
             artifacts_dir=tmp_path,
             claim_freeze_manifest=manifest,
         )
+
+
+def test_run_evaluation_projects_crossing_intervals(monkeypatch, tmp_path: Path) -> None:
+    timestamps = pd.date_range("2024-01-01", periods=3, freq="1H", tz="UTC")
+    frame = pd.DataFrame(
+        {
+            "pair": ["EURUSD"] * 3,
+            "horizon": ["1h"] * 3,
+            "timestamp": timestamps,
+            "y_true": [0.0, 0.1, -0.2],
+            "y_pred": [0.05, -0.05, 0.02],
+            "split": ["test", "test", "test"],
+            "quantile_0.10": [0.2, -0.4, 0.3],
+            "quantile_0.90": [0.1, -0.8, 0.1],
+        }
+    )
+    predictions_path = tmp_path / "rcqf_predictions.csv"
+    frame.to_csv(predictions_path, index=False)
+
+    captured: dict[str, pd.DataFrame] = {}
+
+    def _fake_calibrate(self, predictions: pd.DataFrame) -> pd.DataFrame:  # type: ignore[override]
+        captured["predictions"] = predictions.copy()
+        base = predictions.iloc[[0]].copy()
+        base["interval_lower"] = 1.0
+        base["interval_upper"] = 0.0
+        base["calibration_radius"] = 0.0
+        base["calibration_size"] = 1
+        base["calibration_weight_sum"] = 1.0
+        base["calibration_last_timestamp"] = base["timestamp"]
+        base["alpha"] = 0.1
+        return base
+
+    monkeypatch.setattr(
+        "src.inference.conformal_purged.PurgedConformalCalibrator.calibrate",
+        _fake_calibrate,
+    )
+
+    cfg = PurgedConformalConfig(alpha=0.1, calibration_splits=("test",), include_past_windows=False)
+
+    run_evaluation(
+        predictions_path=predictions_path,
+        run_id="quantile_fix",
+        artifacts_dir=tmp_path,
+        calibration_cfg=cfg,
+    )
+
+    predictions_seen = captured.get("predictions")
+    assert predictions_seen is not None
+    quantile_values = predictions_seen[["quantile_0.10", "quantile_0.90"]].to_numpy(dtype=float)
+    assert np.all(np.diff(quantile_values, axis=1) >= -1e-12)
+
+    intervals_path = tmp_path / "quantile_fix" / "intervals.csv"
+    intervals = pd.read_csv(intervals_path)
+    assert np.all(intervals["interval_lower"] <= intervals["interval_upper"] + 1e-12)
+    assert intervals["interval_lower"].iloc[0] == pytest.approx(intervals["interval_upper"].iloc[0])

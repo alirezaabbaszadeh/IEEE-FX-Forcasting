@@ -15,6 +15,7 @@ from omegaconf import OmegaConf
 from src.analysis.stats import analyze_dm_cache
 from src.features import VolatilityRegimeConfig, label_volatility_regimes
 from src.inference.conformal_purged import PurgedConformalCalibrator, PurgedConformalConfig
+from src.inference.quantile_fix import fix_quantile_frame, resolve_quantile_columns
 from src.inference.stacking_purged import PurgedStackingConfig, PurgedStackingEnsembler
 from src.metrics.point import point_metrics
 
@@ -364,6 +365,9 @@ def run_evaluation(
     freeze_manifest, frozen_ts = _ensure_claim_freeze(claim_freeze_manifest)
 
     predictions = pd.read_csv(predictions_path)
+    quantile_columns = resolve_quantile_columns(predictions.columns)
+    if quantile_columns:
+        predictions = fix_quantile_frame(predictions, quantile_columns)
     stacking_result = None
     if stacking_cfg is not None:
         blender = PurgedStackingEnsembler(stacking_cfg)
@@ -374,6 +378,9 @@ def run_evaluation(
                 ignore_index=True,
                 sort=False,
             )
+            quantile_columns = resolve_quantile_columns(predictions.columns)
+            if quantile_columns:
+                predictions = fix_quantile_frame(predictions, quantile_columns)
     if frozen_ts is not None:
         _assert_test_after_freeze(predictions, frozen_ts)
     metrics = aggregate_metrics(predictions, session_timezone=session_timezone)
@@ -407,6 +414,8 @@ def run_evaluation(
     if calibration_cfg is not None:
         calibrator = PurgedConformalCalibrator(calibration_cfg)
         intervals = calibrator.calibrate(predictions)
+        if not intervals.empty:
+            intervals = fix_quantile_frame(intervals, ["interval_lower", "interval_upper"])
         intervals_path = output_dir / "intervals.csv"
         intervals.to_csv(intervals_path, index=False)
         LOGGER.info("Saved calibrated intervals to %s", intervals_path)
