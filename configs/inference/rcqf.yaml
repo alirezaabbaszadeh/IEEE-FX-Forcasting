@@ -1,0 +1,15 @@
+# Regime-conditioned quantile forecasting profile for targeted stress experiments.
+quantile_levels: [0.05, 0.5, 0.95]
+regime_labelling:
+  window: 96
+  min_periods: 24
+  calm_quantile: 0.25
+  stress_quantile: 0.85
+  tail_quantile: 0.975
+  smoothing_span: 32
+  stress_zscore: 2.5
+  clip_zscore: 6.0
+notes: >-
+  Use alongside RCQF checkpoints when purged conformal calibration underperforms.
+  The configuration mirrors the defaults in `src/features/regime_labels.py` for
+  reproducibility across evaluation pipelines.

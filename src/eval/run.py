@@ -13,6 +13,7 @@ import pandas as pd
 from omegaconf import OmegaConf
 
 from src.analysis.stats import analyze_dm_cache
+from src.features import VolatilityRegimeConfig, label_volatility_regimes
 from src.inference.conformal_purged import PurgedConformalCalibrator, PurgedConformalConfig
 from src.metrics.point import point_metrics
 
@@ -38,6 +39,7 @@ DM_CACHE_COLUMNS = (
 )
 
 EVENT_COLUMN_CANDIDATES = ("event_label", "event", "event_id", "market_event")
+DEFAULT_REGIME_CONFIG = VolatilityRegimeConfig()
 
 
 def _parse_horizon(value: object) -> str:
@@ -70,20 +72,6 @@ def _compute_point_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict[str, 
     metrics = point_metrics(y_true, y_pred)
     metrics["directional_accuracy"] = _directional_accuracy(y_true, y_pred)
     return metrics
-
-
-def _volatility_regime_labels(values: np.ndarray) -> np.ndarray:
-    quantiles = np.quantile(np.abs(values), [0.33, 0.66])
-    low, high = quantiles
-    labels = []
-    for val in np.abs(values):
-        if val <= low:
-            labels.append("low")
-        elif val <= high:
-            labels.append("medium")
-        else:
-            labels.append("high")
-    return np.array(labels)
 
 
 def _session_labels(timestamps: pd.Series) -> np.ndarray:
@@ -165,7 +153,9 @@ def aggregate_metrics(predictions: pd.DataFrame, session_timezone: str = "UTC") 
         y_true = group["y_true"].to_numpy()
         y_pred = group["y_pred"].to_numpy()
         splits = _normalise_split_column(group)
-        regimes = _volatility_regime_labels(group["y_true"].to_numpy())
+        regimes = label_volatility_regimes(
+            group["y_true"], config=DEFAULT_REGIME_CONFIG
+        ).to_numpy()
         sessions = _session_labels(group["session_ts"])
         event_labels = _event_labels(group)
 

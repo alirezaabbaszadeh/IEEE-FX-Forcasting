@@ -68,10 +68,12 @@ governance:
   max_epochs:
     temporal_transformer: 12
     lstm_light: 8
+    rcqf: 10
     arima: 4
     ets: 4
     _default: 16
   max_hpo_trials:
     temporal_transformer: 32
     lstm_light: 24
+    rcqf: 24
     _default: 40
