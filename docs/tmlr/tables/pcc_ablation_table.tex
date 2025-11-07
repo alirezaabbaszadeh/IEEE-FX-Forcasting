@@ -1,0 +1,17 @@
+\begin{table}[t]
+  \centering
+  \caption{Sequential ablations for purged conformal calibration (PCC). Improvements are relative to the uncalibrated baseline.}
+  \label{tab:pcc-ablation}
+  \pgfplotstabletypeset[
+    col sep=comma,
+    string type,
+    columns={variant,crps,coverage_error,crps_improvement_pct,coverage_improvement_pct},
+    columns/variant/.style={column name=Variant,string type,column type=l},
+    columns/crps/.style={column name=CRPS,column type=r},
+    columns/coverage_error/.style={column name=Coverage Error,column type=r},
+    columns/crps_improvement_pct/.style={column name=CRPS $\Delta$ (\%),column type=r},
+    columns/coverage_improvement_pct/.style={column name=Coverage $\Delta$ (\%),column type=r},
+    every head row/.style={before row=\toprule,after row=\midrule},
+    every last row/.style={after row=\bottomrule}
+  ]{data/pcc_ablation_table.csv}
+\end{table}

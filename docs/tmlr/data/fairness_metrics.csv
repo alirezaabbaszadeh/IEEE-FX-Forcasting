@@ -1,0 +1,5 @@
+Scenario,Group,Accuracy,TPR,FPR
+Baseline,USD,0.71,0.68,0.22
+Baseline,EUR,0.69,0.65,0.25
+Robust,USD,0.73,0.7,0.19
+Robust,EUR,0.72,0.68,0.2

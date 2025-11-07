@@ -1,0 +1,4 @@
+Stage,GPUHours,EnergyKWh
+Training,240,320
+Evaluation,60,48
+Monitoring,40,35
