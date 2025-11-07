@@ -17,6 +17,8 @@ def _load_table(path: Path) -> pd.DataFrame:
         return pd.read_csv(path)
     if ext in {".json", ".jsonl"}:
         payload = json.loads(path.read_text())
+        if isinstance(payload, dict):
+            return pd.DataFrame([payload])
         return pd.DataFrame(payload)
     if ext in {".parquet", ".pq"}:
         return pd.read_parquet(path)

@@ -27,24 +27,36 @@ def _discover_metadata_files(root: Path) -> List[Path]:
 
 def _collect_metrics_paths(metadata_files: Sequence[Path]) -> List[Path]:
     discovered: list[Path] = []
+    seen: set[Path] = set()
     for meta_path in metadata_files:
         payload = json.loads(meta_path.read_text())
         artifacts = payload.get("artifacts", {})
+
+        candidates: list[str] = []
         metrics_entry = artifacts.get("metrics")
-        if not metrics_entry:
-            continue
-        metrics_path = _resolve_artifact_path(meta_path.parent, str(metrics_entry))
-        if metrics_path.exists():
-            discovered.append(metrics_path)
-    unique: list[Path] = []
-    seen = set()
-    for path in discovered:
-        key = path.resolve()
-        if key in seen:
-            continue
-        seen.add(key)
-        unique.append(path)
-    return unique
+        if metrics_entry:
+            candidates.append(str(metrics_entry))
+        summary_entry = artifacts.get("summary")
+        if summary_entry:
+            candidates.append(str(summary_entry))
+
+        for candidate in candidates:
+            metrics_path = _resolve_artifact_path(meta_path.parent, candidate)
+            if metrics_path.exists():
+                resolved = metrics_path.resolve()
+                if resolved not in seen:
+                    seen.add(resolved)
+                    discovered.append(metrics_path)
+
+        # Fallback: collect per-seed metrics.json snapshots
+        for metrics_file in sorted(meta_path.parent.glob("seed-*/metrics.json")):
+            resolved = metrics_file.resolve()
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            discovered.append(metrics_file)
+
+    return discovered
 
 
 def _collect_config_paths(metadata_files: Sequence[Path], project_root: Path) -> List[Path]:
