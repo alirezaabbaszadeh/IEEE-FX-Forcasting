@@ -75,6 +75,26 @@ def test_collate_run_group_emits_expected_tables(tmp_path: Path) -> None:
     aggregated = run_multirun(seeds, run_root, _runner, base_metadata=base_metadata)
     assert aggregated
 
+    variant_summary = {
+        "baseline": run_root.name,
+        "seeds": seeds,
+        "thresholds": {"crps": {"direction": "decrease", "relative": 0.02}},
+        "variants": [
+            {"name": run_root.name, "deltas": {}},
+            {
+                "name": "pcc_on",
+                "deltas": {
+                    "crps": {
+                        "direction": "decrease",
+                        "absolute": 0.05,
+                        "relative": 0.08,
+                    }
+                },
+            },
+        ],
+    }
+    (run_root / "variants.json").write_text(json.dumps(variant_summary))
+
     outputs = collate_run_group(run_root)
     expected_keys = {"aggregate", "calibration", "compute_efficiency", "dm_table", "spa_table", "mcs_table"}
     assert expected_keys.issubset(outputs.keys())
@@ -97,6 +117,11 @@ def test_collate_run_group_emits_expected_tables(tmp_path: Path) -> None:
         rows = list(csv.DictReader(handle))
     assert rows
     assert rows[0]["metric"]
+
+    variant_csv = outputs.get("variants")
+    assert variant_csv is not None
+    rows = list(csv.DictReader(variant_csv.open()))
+    assert any(row["variant"] == "pcc_on" for row in rows)
 
     compute_path = run_root / "seed-3" / "compute.json"
     assert compute_path.exists()
