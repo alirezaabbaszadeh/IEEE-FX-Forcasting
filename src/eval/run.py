@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 from pathlib import Path
-from typing import Iterable, List
+from typing import Iterable, List, Mapping
 
 import numpy as np
 import pandas as pd
@@ -23,6 +24,7 @@ DM_CACHE_COLUMNS = (
     "pair",
     "horizon",
     "model",
+    "split",
     "timestamp",
     "timestamp_utc",
     "y_true",
@@ -30,7 +32,12 @@ DM_CACHE_COLUMNS = (
     "error",
     "abs_error",
     "squared_error",
+    "volatility_regime",
+    "session",
+    "event_label",
 )
+
+EVENT_COLUMN_CANDIDATES = ("event_label", "event", "event_id", "market_event")
 
 
 def _parse_horizon(value: object) -> str:
@@ -94,6 +101,24 @@ def _session_labels(timestamps: pd.Series) -> np.ndarray:
     return np.array(labels)
 
 
+def _normalise_split_column(frame: pd.DataFrame) -> np.ndarray:
+    if "split" not in frame.columns:
+        return np.full(len(frame), "unspecified", dtype=object)
+    series = frame["split"].fillna("unspecified").astype(str)
+    normalised = series.str.strip().str.lower()
+    normalised = normalised.replace("", "unspecified")
+    return normalised.to_numpy()
+
+
+def _event_labels(frame: pd.DataFrame) -> np.ndarray:
+    for column in EVENT_COLUMN_CANDIDATES:
+        if column in frame.columns:
+            series = frame[column].fillna("unspecified").astype(str)
+            labels = series.replace("", "unspecified")
+            return labels.to_numpy()
+    return np.full(len(frame), "unspecified", dtype=object)
+
+
 def _compute_gating_entropy(frame: pd.DataFrame) -> np.ndarray | None:
     gating_cols = [col for col in frame.columns if col.startswith("gate_prob_")]
     if gating_cols:
@@ -139,6 +164,11 @@ def aggregate_metrics(predictions: pd.DataFrame, session_timezone: str = "UTC") 
     for (pair, horizon, model), group in grouped:
         y_true = group["y_true"].to_numpy()
         y_pred = group["y_pred"].to_numpy()
+        splits = _normalise_split_column(group)
+        regimes = _volatility_regime_labels(group["y_true"].to_numpy())
+        sessions = _session_labels(group["session_ts"])
+        event_labels = _event_labels(group)
+
         metrics = _compute_point_metrics(y_true, y_pred)
         for metric_name, value in metrics.items():
             records.append(
@@ -209,7 +239,6 @@ def aggregate_metrics(predictions: pd.DataFrame, session_timezone: str = "UTC") 
                 }
             )
         if len(group) >= 3:
-            regimes = _volatility_regime_labels(group["y_true"].to_numpy())
             for regime in np.unique(regimes):
                 mask = regimes == regime
                 regime_metrics = _compute_point_metrics(
@@ -229,7 +258,6 @@ def aggregate_metrics(predictions: pd.DataFrame, session_timezone: str = "UTC") 
                             "count": int(mask.sum()),
                         }
                     )
-        sessions = _session_labels(group["session_ts"])
         for session in np.unique(sessions):
             mask = sessions == session
             session_metrics = _compute_point_metrics(
@@ -256,6 +284,7 @@ def aggregate_metrics(predictions: pd.DataFrame, session_timezone: str = "UTC") 
                     "pair": pair,
                     "horizon": horizon,
                     "model": model,
+                    "split": splits,
                     "timestamp": group["session_ts"].astype(str).to_numpy(),
                     "timestamp_utc": group["timestamp"].astype(str).to_numpy(),
                     "y_true": y_true,
@@ -263,6 +292,9 @@ def aggregate_metrics(predictions: pd.DataFrame, session_timezone: str = "UTC") 
                     "error": errors,
                     "abs_error": np.abs(errors),
                     "squared_error": np.square(errors),
+                    "volatility_regime": regimes,
+                    "session": sessions,
+                    "event_label": event_labels,
                 }
             )
         )
@@ -274,6 +306,51 @@ def aggregate_metrics(predictions: pd.DataFrame, session_timezone: str = "UTC") 
     else:
         metrics_df.attrs["dm_cache"] = pd.DataFrame(columns=DM_CACHE_COLUMNS)
     return metrics_df
+
+
+def _load_claim_freeze_manifest(path: Path) -> Mapping[str, object]:
+    if not path.exists():
+        raise FileNotFoundError(f"Claim freeze manifest not found at {path}")
+    suffix = path.suffix.lower()
+    if suffix in {".json"}:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    else:
+        raw_cfg = OmegaConf.load(path)
+        payload = OmegaConf.to_container(raw_cfg, resolve=True)
+    if not isinstance(payload, Mapping):
+        raise TypeError("Claim freeze manifest must resolve to a mapping")
+    return dict(payload)
+
+
+def _ensure_claim_freeze(manifest_path: Path | None) -> tuple[Mapping[str, object] | None, pd.Timestamp | None]:
+    if manifest_path is None:
+        return None, None
+    manifest = _load_claim_freeze_manifest(manifest_path)
+    frozen_at = manifest.get("frozen_at")
+    if frozen_at is None:
+        raise KeyError("Claim freeze manifest missing required 'frozen_at' field")
+    frozen_ts = pd.to_datetime(frozen_at, utc=True, errors="coerce")
+    if pd.isna(frozen_ts):
+        raise ValueError("Claim freeze 'frozen_at' value must be a valid timestamp")
+    return manifest, frozen_ts
+
+
+def _assert_test_after_freeze(predictions: pd.DataFrame, frozen_at: pd.Timestamp) -> None:
+    if "split" not in predictions.columns:
+        return
+    test_mask = predictions["split"].fillna("").astype(str).str.lower() == "test"
+    if not test_mask.any():
+        return
+    timestamps = pd.to_datetime(
+        predictions.loc[test_mask, "timestamp"], utc=True, errors="coerce"
+    ).dropna()
+    if timestamps.empty:
+        return
+    earliest = timestamps.min()
+    if earliest < frozen_at:
+        raise ValueError(
+            "Test split observations precede the claim freeze; regenerate predictions from a frozen configuration",
+        )
 
 
 def run_evaluation(
@@ -288,15 +365,28 @@ def run_evaluation(
     higher_is_better: bool = False,
     stats_metric: str = "squared_error",
     calibration_cfg: PurgedConformalConfig | None = None,
+    claim_freeze_manifest: Path | None = None,
 ) -> Path:
     """Load predictions, aggregate metrics, and persist summaries to disk."""
 
+    freeze_manifest, frozen_ts = _ensure_claim_freeze(claim_freeze_manifest)
+
     predictions = pd.read_csv(predictions_path)
+    if frozen_ts is not None:
+        _assert_test_after_freeze(predictions, frozen_ts)
     metrics = aggregate_metrics(predictions, session_timezone=session_timezone)
     output_dir = artifacts_dir / run_id
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / "metrics.csv"
     metrics.to_csv(output_path, index=False)
+
+    if freeze_manifest is not None:
+        payload = dict(freeze_manifest)
+        payload["frozen_at"] = pd.to_datetime(frozen_ts).isoformat()
+        payload["manifest_path"] = str(Path(claim_freeze_manifest).resolve())
+        freeze_path = output_dir / "claim_freeze.json"
+        freeze_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        metrics.attrs["claim_freeze"] = payload
 
     if calibration_cfg is not None:
         calibrator = PurgedConformalCalibrator(calibration_cfg)
@@ -408,6 +498,11 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
         type=Path,
         help="Path to a YAML file with purged conformal calibration settings",
     )
+    parser.add_argument(
+        "--claim-freeze-manifest",
+        type=Path,
+        help="Path to the claim freeze manifest acknowledging when the test split became accessible",
+    )
     return parser.parse_args(argv)
 
 
@@ -434,6 +529,7 @@ def main(argv: Iterable[str] | None = None) -> None:
         higher_is_better=args.higher_is_better,
         stats_metric=args.stats_metric,
         calibration_cfg=calibration_cfg,
+        claim_freeze_manifest=args.claim_freeze_manifest,
     )
     LOGGER.info("Saved aggregated metrics to %s", output_path)
 

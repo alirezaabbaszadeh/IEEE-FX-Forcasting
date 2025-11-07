@@ -46,18 +46,22 @@ def test_generate_calibration_writes_expected_outputs(tmp_path: Path) -> None:
     assert result_path.exists()
     summary = pd.read_csv(result_path)
     assert not summary.empty
-    assert {"run", "metric", "level", "value"}.issubset(summary.columns)
+    assert {"run", "metric", "level", "value", "segment_group", "segment_value"}.issubset(
+        summary.columns
+    )
+    segmented = summary[summary["segment_group"] != "overall"]
+    assert not segmented.empty
     assert ((summary["run"] == "overall") & (summary["metric"] == "crps")).any()
 
     figs_dir = output_root / "figs"
-    expected_labels = {"run_a_predictions", "run_b_predictions", "overall"}
-    for label in expected_labels:
-        pit_path = figs_dir / f"pit_hist_{label}.png"
-        coverage_path = figs_dir / f"coverage_{label}.png"
-        assert pit_path.exists()
-        assert pit_path.stat().st_size > 0
-        assert coverage_path.exists()
-        assert coverage_path.stat().st_size > 0
+    base_labels = ("run_a_predictions", "run_b_predictions", "overall")
+    for label in base_labels:
+        pit_matches = sorted(figs_dir.glob(f"pit_hist_{label}*.png"))
+        coverage_matches = sorted(figs_dir.glob(f"coverage_{label}*.png"))
+        assert pit_matches, f"No PIT histogram generated for {label}"
+        assert coverage_matches, f"No coverage plot generated for {label}"
+        for path in pit_matches + coverage_matches:
+            assert path.stat().st_size > 0
 
     coverage_rows = summary[summary["metric"] == "coverage"]
     assert not coverage_rows.empty

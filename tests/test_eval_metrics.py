@@ -50,8 +50,10 @@ def test_aggregate_metrics_dm_cache_structure():
                 "2023-01-01T01:00:00Z",
                 "2023-01-01T02:00:00Z",
             ],
+            "split": ["val", "val", "test", "val", "test", "test"],
             "y_true": [0.1, -0.2, 0.0, 0.1, -0.2, 0.0],
             "y_pred": [0.11, -0.21, 0.02, 0.13, -0.25, 0.05],
+            "event_label": ["none", "none", "nfp", "none", "nfp", "nfp"],
         }
     )
 
@@ -66,6 +68,10 @@ def test_aggregate_metrics_dm_cache_structure():
     sample_row = dm_cache.iloc[0]
     assert abs(sample_row["error"]) == pytest.approx(abs(sample_row["y_pred"] - sample_row["y_true"]))
     assert sample_row["squared_error"] == pytest.approx(sample_row["error"] ** 2)
+    assert sample_row["split"] in {"val", "test", "unspecified"}
+    assert sample_row["volatility_regime"] in {"low", "medium", "high"}
+    assert sample_row["session"] in {"asia", "europe", "us", "after_hours"}
+    assert set(dm_cache["event_label"]) == {"none", "nfp"}
 
 
 def test_aggregate_metrics_includes_fold_breakdown():

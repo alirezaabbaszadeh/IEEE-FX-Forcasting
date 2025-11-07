@@ -29,6 +29,8 @@ SMOKE=0
 RUN_ID=""
 BASELINE_MODEL=${BASELINE_MODEL:-""}
 HYDRA_OVERRIDES=()
+CLAIM_FREEZE_MANIFEST=${CLAIM_FREEZE_MANIFEST:-"${ROOT_DIR}/configs/governance/claim_freeze.yaml"}
+CALIBRATION_CONFIG=${CALIBRATION_CONFIG:-"${ROOT_DIR}/configs/inference/pcc.yaml"}
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -102,6 +104,16 @@ fi
 
 cd "$ROOT_DIR"
 
+if [[ ! -f "$CLAIM_FREEZE_MANIFEST" ]]; then
+  echo "Claim freeze manifest not found at $CLAIM_FREEZE_MANIFEST" >&2
+  exit 1
+fi
+
+if [[ ! -f "$CALIBRATION_CONFIG" ]]; then
+  echo "Calibration config not found at $CALIBRATION_CONFIG" >&2
+  exit 1
+fi
+
 if [[ $USE_CONDA -eq 1 ]]; then
   if ! command -v conda >/dev/null 2>&1; then
     echo "Conda is required but was not found. Use --no-conda to bypass this check." >&2
@@ -142,6 +154,21 @@ if [[ ${#PREDICTION_FILES[@]} -eq 0 ]]; then
   echo "No prediction files discovered under $ARTIFACTS_ROOT. Ensure evaluation exports predictions." >&2
   exit 1
 fi
+
+log "Evaluating predictions with purged conformal calibration"
+for prediction_path in "${PREDICTION_FILES[@]}"; do
+  run_dir=$(dirname "$prediction_path")
+  run_root=$(dirname "$run_dir")
+  eval_run_id=$(basename "$run_dir")
+  log "Evaluating ${prediction_path} (run_id=${eval_run_id})"
+  python -m src.eval.run \
+    --run-id "$eval_run_id" \
+    --predictions "$prediction_path" \
+    --artifacts-dir "$run_root" \
+    --session-timezone "UTC" \
+    --calibration-config "$CALIBRATION_CONFIG" \
+    --claim-freeze-manifest "$CLAIM_FREEZE_MANIFEST"
+done
 
 CALIBRATION_DIR="$PAPER_ROOT/calibration"
 mkdir -p "$CALIBRATION_DIR"

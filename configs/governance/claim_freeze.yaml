@@ -1,0 +1,7 @@
+# Canonical claim freeze metadata for PCC-enabled evaluations.
+frozen_at: "2023-12-15T00:00:00Z"
+notes: |
+  Temporal transformer PCC stack frozen for publication assets.
+  See docs/pcc_claim_freeze.md for the audited configuration and success criteria.
+config_snapshot: configs/default.yaml
+calibration_profile: configs/inference/pcc.yaml
