@@ -69,7 +69,7 @@ def test_aggregate_metrics_dm_cache_structure():
     assert abs(sample_row["error"]) == pytest.approx(abs(sample_row["y_pred"] - sample_row["y_true"]))
     assert sample_row["squared_error"] == pytest.approx(sample_row["error"] ** 2)
     assert sample_row["split"] in {"val", "test", "unspecified"}
-    assert sample_row["volatility_regime"] in {"low", "medium", "high"}
+    assert sample_row["volatility_regime"] in {"calm", "volatile", "stress", "unknown"}
     assert sample_row["session"] in {"asia", "europe", "us", "after_hours"}
     assert set(dm_cache["event_label"]) == {"none", "nfp"}
 

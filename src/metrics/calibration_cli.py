@@ -14,6 +14,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
+from src.features import VolatilityRegimeConfig, label_volatility_regimes
 from src.metrics.calibration import (
     CalibrationSummary,
     crps_ensemble,
@@ -24,6 +25,7 @@ from src.metrics.calibration import (
 )
 
 LOGGER = logging.getLogger(__name__)
+DEFAULT_REGIME_CONFIG = VolatilityRegimeConfig()
 
 
 def _normalise_path(path: Path) -> Path:
@@ -130,20 +132,6 @@ def _sanitise_label(text: str) -> str:
                 previous_sep = True
     label = "".join(allowed).strip("_")
     return label or "run"
-
-
-def _volatility_regime_labels(values: np.ndarray) -> np.ndarray:
-    quantiles = np.quantile(np.abs(values), [0.33, 0.66])
-    low, high = quantiles
-    labels: list[str] = []
-    for val in np.abs(values):
-        if val <= low:
-            labels.append("low")
-        elif val <= high:
-            labels.append("medium")
-        else:
-            labels.append("high")
-    return np.array(labels)
 
 
 def _discover_event_column(frame: pd.DataFrame) -> str | None:
@@ -294,7 +282,9 @@ def _summarise_run(
     )
 
     if len(frame) >= 3:
-        regimes = _volatility_regime_labels(frame["y_true"].to_numpy(dtype=float))
+        regimes = label_volatility_regimes(
+            frame["y_true"], config=DEFAULT_REGIME_CONFIG
+        ).to_numpy()
         for regime in np.unique(regimes):
             mask = regimes == regime
             if int(mask.sum()) < 3:

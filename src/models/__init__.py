@@ -3,6 +3,7 @@
 from .forecasting import ModelConfig, TemporalForecastingModel
 from .moe_transformer import MoETransformerConfig, MoETransformerModel
 from .deep.light_lstm import LightLSTMConfig, LightLSTMModel
+from .deep.rcqf import RCQFConfig, RCQFModel
 from .classical import (
     ArimaBaseline,
     ArimaConfig,
@@ -19,6 +20,8 @@ __all__ = [
     "MoETransformerModel",
     "LightLSTMConfig",
     "LightLSTMModel",
+    "RCQFConfig",
+    "RCQFModel",
     "ArimaBaseline",
     "ArimaConfig",
     "ETSBaseline",
