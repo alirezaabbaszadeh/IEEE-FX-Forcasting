@@ -1,0 +1,7 @@
+# Purged conformal calibration defaults for inference-time interval estimation.
+alpha: 0.1
+embargo: 2
+calibration_splits: ["val"]
+include_past_windows: true
+weight_decay: null
+min_calibration: 30
