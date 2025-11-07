@@ -132,6 +132,27 @@ def _sanitise_label(text: str) -> str:
     return label or "run"
 
 
+def _volatility_regime_labels(values: np.ndarray) -> np.ndarray:
+    quantiles = np.quantile(np.abs(values), [0.33, 0.66])
+    low, high = quantiles
+    labels: list[str] = []
+    for val in np.abs(values):
+        if val <= low:
+            labels.append("low")
+        elif val <= high:
+            labels.append("medium")
+        else:
+            labels.append("high")
+    return np.array(labels)
+
+
+def _discover_event_column(frame: pd.DataFrame) -> str | None:
+    for column in ("event_label", "event", "event_id", "market_event"):
+        if column in frame.columns:
+            return column
+    return None
+
+
 def _pit_plot(values: np.ndarray, bins: int, destination: Path) -> None:
     counts, edges = np.histogram(values, bins=bins, range=(0.0, 1.0))
     widths = np.diff(edges)
@@ -175,6 +196,83 @@ def _coverage_plot(
     plt.close(fig)
 
 
+def _summarise_frame(
+    label: str,
+    frame: pd.DataFrame,
+    *,
+    quantile_levels: Sequence[float],
+    interval_levels: Sequence[float],
+    pit_bins: int,
+    output_dir: Path,
+    segment_group: str,
+    segment_value: str,
+) -> list[dict[str, object]]:
+    if frame.empty:
+        return []
+    y_true = frame["y_true"].to_numpy(dtype=float)
+    samples = _extract_samples(frame)
+    quantiles = _extract_quantiles(frame)
+    quantiles = _ensure_quantiles(quantiles, samples, quantile_levels)
+
+    scores = crps_ensemble(y_true, samples)
+    pit = pit_values(y_true, samples)
+    summary_records: list[dict[str, object]] = [
+        {
+            "run": label,
+            "metric": "crps",
+            "level": "mean",
+            "value": float(np.mean(scores)),
+            "segment_group": segment_group,
+            "segment_value": segment_value,
+        }
+    ]
+
+    interval_points: list[tuple[float, float]] = []
+    for level in interval_levels:
+        lower, upper = _central_interval_bounds(quantiles, level, samples)
+        coverage = interval_coverage(y_true, lower, upper)
+        interval_points.append((level, coverage))
+        summary_records.append(
+            {
+                "run": label,
+                "metric": "coverage",
+                "level": level,
+                "value": coverage,
+                "segment_group": segment_group,
+                "segment_value": segment_value,
+            }
+        )
+        summary_records.append(
+            {
+                "run": label,
+                "metric": "coverage_error",
+                "level": level,
+                "value": interval_coverage_error(y_true, lower, upper, level),
+                "segment_group": segment_group,
+                "segment_value": segment_value,
+            }
+        )
+
+    reliability = reliability_curve(y_true, quantiles)
+    for nominal, observed in zip(reliability.nominal, reliability.observed):
+        summary_records.append(
+            {
+                "run": label,
+                "metric": "reliability",
+                "level": nominal,
+                "value": observed,
+                "segment_group": segment_group,
+                "segment_value": segment_value,
+            }
+        )
+
+    figs_dir = output_dir / "figs"
+    figs_dir.mkdir(parents=True, exist_ok=True)
+    _pit_plot(pit, pit_bins, figs_dir / f"pit_hist_{label}.png")
+    _coverage_plot(reliability, interval_points, figs_dir / f"coverage_{label}.png")
+    return summary_records
+
+
 def _summarise_run(
     label: str,
     frame: pd.DataFrame,
@@ -184,41 +282,58 @@ def _summarise_run(
     pit_bins: int,
     output_dir: Path,
 ) -> list[dict[str, object]]:
-    y_true = frame["y_true"].to_numpy(dtype=float)
-    samples = _extract_samples(frame)
-    quantiles = _extract_quantiles(frame)
-    quantiles = _ensure_quantiles(quantiles, samples, quantile_levels)
+    records = _summarise_frame(
+        label,
+        frame,
+        quantile_levels=quantile_levels,
+        interval_levels=interval_levels,
+        pit_bins=pit_bins,
+        output_dir=output_dir,
+        segment_group="overall",
+        segment_value="all",
+    )
 
-    scores = crps_ensemble(y_true, samples)
-    pit = pit_values(y_true, samples)
-    summary_records: list[dict[str, object]] = [
-        {"run": label, "metric": "crps", "level": "mean", "value": float(np.mean(scores))}
-    ]
+    if len(frame) >= 3:
+        regimes = _volatility_regime_labels(frame["y_true"].to_numpy(dtype=float))
+        for regime in np.unique(regimes):
+            mask = regimes == regime
+            if int(mask.sum()) < 3:
+                continue
+            regime_label = _sanitise_label(f"{label}_volatility_{regime}")
+            records.extend(
+                _summarise_frame(
+                    regime_label,
+                    frame.loc[mask],
+                    quantile_levels=quantile_levels,
+                    interval_levels=interval_levels,
+                    pit_bins=pit_bins,
+                    output_dir=output_dir,
+                    segment_group="volatility",
+                    segment_value=str(regime),
+                )
+            )
 
-    interval_points: list[tuple[float, float]] = []
-    for level in interval_levels:
-        lower, upper = _central_interval_bounds(quantiles, level, samples)
-        coverage = interval_coverage(y_true, lower, upper)
-        interval_points.append((level, coverage))
-        summary_records.append({"run": label, "metric": "coverage", "level": level, "value": coverage})
-        summary_records.append(
-            {
-                "run": label,
-                "metric": "coverage_error",
-                "level": level,
-                "value": interval_coverage_error(y_true, lower, upper, level),
-            }
-        )
+    event_column = _discover_event_column(frame)
+    if event_column is not None:
+        for event_value, event_frame in frame.groupby(event_column):
+            if event_frame.empty:
+                continue
+            event_value_str = "unspecified" if pd.isna(event_value) else str(event_value)
+            event_label = _sanitise_label(f"{label}_event_{event_value_str}")
+            records.extend(
+                _summarise_frame(
+                    event_label,
+                    event_frame,
+                    quantile_levels=quantile_levels,
+                    interval_levels=interval_levels,
+                    pit_bins=pit_bins,
+                    output_dir=output_dir,
+                    segment_group="event",
+                    segment_value=event_value_str,
+                )
+            )
 
-    reliability = reliability_curve(y_true, quantiles)
-    for nominal, observed in zip(reliability.nominal, reliability.observed):
-        summary_records.append({"run": label, "metric": "reliability", "level": nominal, "value": observed})
-
-    figs_dir = output_dir / "figs"
-    figs_dir.mkdir(parents=True, exist_ok=True)
-    _pit_plot(pit, pit_bins, figs_dir / f"pit_hist_{label}.png")
-    _coverage_plot(reliability, interval_points, figs_dir / f"coverage_{label}.png")
-    return summary_records
+    return records
 
 
 def _stack_frames(frames: Sequence[pd.DataFrame]) -> pd.DataFrame:

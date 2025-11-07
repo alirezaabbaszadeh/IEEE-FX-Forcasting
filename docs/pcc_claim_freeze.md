@@ -9,7 +9,9 @@ profile constrains the model to two residual blocks with four-head attention, a 
 convolutional stem, and an LSTM bottleneck widened to 256 hidden units with 0.1 dropout to stabilise
 probabilistic training.【F:configs/default.yaml†L40-L55】 Multirun seeds and governance caps (12 epochs
 for the temporal transformer and a 32-trial HPO ceiling) remain part of the locked state so audit
-replays can match validation runs byte-for-byte.【F:configs/default.yaml†L57-L77】
+replays can match validation runs byte-for-byte.【F:configs/default.yaml†L57-L77】 The reproducibility
+manifest at `configs/governance/claim_freeze.yaml` records the freeze timestamp and references the
+calibration profile to rehydrate the PCC configuration during evaluation.【F:configs/governance/claim_freeze.yaml†L1-L7】
 
 ## Calibration hyperparameters
 Purged conformal calibration is frozen to the `configs/inference/pcc.yaml` profile. The alpha level of

@@ -651,6 +651,7 @@ def analyze_dm_cache(
     higher_is_better: bool = False,
     random_state: int | np.random.Generator | None = None,
     n_bootstrap: int = 2000,
+    segment_columns: Sequence[str] | None = None,
 ) -> Dict[str, pd.DataFrame]:
     if dm_cache.empty:
         LOGGER.warning("DM cache is empty; skipping statistical post-processing")
@@ -678,5 +679,53 @@ def analyze_dm_cache(
         random_state=random_state,
         higher_is_better=higher_is_better,
     )
-    return analyzer.analyze(metric_frame, baseline=baseline_model)
+    tables = dict(analyzer.analyze(metric_frame, baseline=baseline_model))
+
+    segment_index: List[Dict[str, object]] = []
+    columns_to_check = segment_columns or ("volatility_regime", "session", "event_label")
+    for column in columns_to_check:
+        if column not in dm_cache.columns:
+            continue
+        for segment_value, segment_df in dm_cache.groupby(column, dropna=False):
+            segment_metric = (
+                segment_df[["pair", "horizon", "model", metric]]
+                .rename(columns={metric: "value"})
+                .dropna(subset=["value"])
+            )
+            if segment_metric.empty:
+                continue
+            label = "unspecified" if pd.isna(segment_value) else str(segment_value)
+            slug = _sanitize_slug(column, label)
+            seg_analyzer = StatisticalAnalyzer(
+                run_id=f"{run_id}/segments/{column}/{slug}",
+                output_dir=output_dir,
+                n_bootstrap=n_bootstrap,
+                alpha=alpha,
+                newey_west_lag=newey_west_lag,
+                random_state=random_state,
+                higher_is_better=higher_is_better,
+            )
+            seg_tables = seg_analyzer.analyze(segment_metric, baseline=baseline_model)
+            for name, df in seg_tables.items():
+                enriched = df.copy()
+                enriched.insert(0, "segment_column", column)
+                enriched.insert(1, "segment_value", label)
+                tables[f"{name}_segment_{column}_{slug}"] = enriched
+            segment_index.append(
+                {
+                    "segment_column": column,
+                    "segment_value": label,
+                    "samples": int(segment_metric.shape[0]),
+                    "slug": slug,
+                }
+            )
+
+    if segment_index:
+        index_df = pd.DataFrame(segment_index)
+        stats_root = Path(output_dir) / run_id / "stats"
+        stats_root.mkdir(parents=True, exist_ok=True)
+        index_df.to_csv(stats_root / "segment_index.csv", index=False)
+        tables["segment_index"] = index_df
+
+    return tables
 

@@ -65,6 +65,9 @@ def test_run_evaluation_produces_intervals_with_expected_coverage(tmp_path: Path
     predictions_path = tmp_path / "predictions.csv"
     frame.to_csv(predictions_path, index=False)
 
+    freeze_manifest = tmp_path / "claim_freeze.yaml"
+    freeze_manifest.write_text("frozen_at: 2023-03-01T00:00:00Z\nnotes: synthetic validation\n")
+
     raw_cfg = OmegaConf.load(Path("configs/inference/pcc.yaml"))
     cfg_mapping = OmegaConf.to_container(raw_cfg, resolve=True)
     assert isinstance(cfg_mapping, dict)
@@ -75,11 +78,15 @@ def test_run_evaluation_produces_intervals_with_expected_coverage(tmp_path: Path
         run_id="synthetic",
         artifacts_dir=tmp_path,
         calibration_cfg=calibration_cfg,
+        claim_freeze_manifest=freeze_manifest,
     )
 
     assert metrics_path.exists()
     intervals_path = tmp_path / "synthetic" / "intervals.csv"
     assert intervals_path.exists()
+
+    freeze_output = tmp_path / "synthetic" / "claim_freeze.json"
+    assert freeze_output.exists()
 
     intervals = pd.read_csv(intervals_path)
     coverage = interval_coverage(
@@ -98,3 +105,20 @@ def test_run_evaluation_produces_intervals_with_expected_coverage(tmp_path: Path
         if pd.isna(last_cal_ts):
             continue
         assert min_test_ts - last_cal_ts >= freq * calibration_cfg.embargo
+
+
+def test_run_evaluation_rejects_pre_freeze_test_access(tmp_path: Path) -> None:
+    frame = _synthetic_predictions()
+    predictions_path = tmp_path / "predictions.csv"
+    frame.to_csv(predictions_path, index=False)
+
+    manifest = tmp_path / "claim_freeze.yaml"
+    manifest.write_text("frozen_at: 2025-01-01T00:00:00Z\n")
+
+    with pytest.raises(ValueError, match="precede the claim freeze"):
+        run_evaluation(
+            predictions_path=predictions_path,
+            run_id="freeze_failure",
+            artifacts_dir=tmp_path,
+            claim_freeze_manifest=manifest,
+        )
