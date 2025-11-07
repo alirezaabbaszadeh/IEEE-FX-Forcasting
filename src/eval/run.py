@@ -9,8 +9,10 @@ from typing import Iterable, List
 
 import numpy as np
 import pandas as pd
+from omegaconf import OmegaConf
 
 from src.analysis.stats import analyze_dm_cache
+from src.inference.conformal_purged import PurgedConformalCalibrator, PurgedConformalConfig
 from src.metrics.point import point_metrics
 
 LOGGER = logging.getLogger(__name__)
@@ -285,6 +287,7 @@ def run_evaluation(
     newey_west_lag: int = 1,
     higher_is_better: bool = False,
     stats_metric: str = "squared_error",
+    calibration_cfg: PurgedConformalConfig | None = None,
 ) -> Path:
     """Load predictions, aggregate metrics, and persist summaries to disk."""
 
@@ -294,6 +297,14 @@ def run_evaluation(
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / "metrics.csv"
     metrics.to_csv(output_path, index=False)
+
+    if calibration_cfg is not None:
+        calibrator = PurgedConformalCalibrator(calibration_cfg)
+        intervals = calibrator.calibrate(predictions)
+        intervals_path = output_dir / "intervals.csv"
+        intervals.to_csv(intervals_path, index=False)
+        LOGGER.info("Saved calibrated intervals to %s", intervals_path)
+        metrics.attrs["intervals_path"] = intervals_path
 
     dm_cache = metrics.attrs.get("dm_cache")
     dm_cache_path: Path | None = None
@@ -392,12 +403,25 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
         choices=["error", "abs_error", "squared_error"],
         help="Loss metric from the DM cache to analyse",
     )
+    parser.add_argument(
+        "--calibration-config",
+        type=Path,
+        help="Path to a YAML file with purged conformal calibration settings",
+    )
     return parser.parse_args(argv)
 
 
 def main(argv: Iterable[str] | None = None) -> None:
     args = parse_args(argv)
     logging.basicConfig(level=logging.INFO)
+    calibration_cfg = None
+    if args.calibration_config:
+        raw_cfg = OmegaConf.load(args.calibration_config)
+        container = OmegaConf.to_container(raw_cfg, resolve=True)
+        if not isinstance(container, dict):
+            raise TypeError("Calibration config must resolve to a mapping")
+        calibration_cfg = PurgedConformalConfig.from_mapping(container)
+
     output_path = run_evaluation(
         predictions_path=args.predictions,
         run_id=args.run_id,
@@ -409,6 +433,7 @@ def main(argv: Iterable[str] | None = None) -> None:
         newey_west_lag=args.newey_west_lag,
         higher_is_better=args.higher_is_better,
         stats_metric=args.stats_metric,
+        calibration_cfg=calibration_cfg,
     )
     LOGGER.info("Saved aggregated metrics to %s", output_path)
 
