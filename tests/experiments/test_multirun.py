@@ -8,9 +8,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import List
 
+import pytest
+
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 
 from src.experiments.multirun import RunResult, run_multirun
+from src.experiments.pcc import run_pcc_toggle
+from src.experiments.runner import MultiRunExperiment
+from src.experiments.runner import VariantRunCollection
 from src.training.engine import ComputeStats
 
 
@@ -168,3 +173,119 @@ def test_run_multirun_aggregation_math(tmp_path: Path) -> None:
     # Student-t critical value for df=1 is ~12.706
     ci_radius = 12.706 * expected_std / len(seeds) ** 0.5
     assert abs(aggregated["best_val_loss"]["ci95"] - ci_radius) < 1e-6
+
+
+def test_run_variants_writes_summary_and_enforces_threshold(tmp_path: Path) -> None:
+    seeds = list(range(10, 20))
+
+    def _variant_runner(config: dict[str, object]) -> dict[str, object]:
+        seed = int(config["seed"])
+        noise = (seed % 5) * 0.0005
+        use_pcc = bool(config.get("use_pcc", False))
+        base_crps = 0.55 - (0.05 if use_pcc else 0.0)
+        base_cov = 0.10 - (0.04 if use_pcc else 0.0)
+        return {
+            "metrics": {
+                "crps": base_crps + noise,
+                "coverage_error": base_cov + noise,
+            }
+        }
+
+    experiment = MultiRunExperiment(_variant_runner, num_runs=len(seeds), base_seed=min(seeds))
+
+    collection = experiment.run_variants(
+        {"use_pcc": False},
+        run_id="pcc_case",
+        variants={"pcc_off": {"use_pcc": False}, "pcc_on": {"use_pcc": True}},
+        baseline="pcc_off",
+        output_dir=tmp_path,
+        seeds=seeds,
+        improvement_thresholds={"crps": 0.02, "coverage_error": 0.02},
+    )
+
+    assert isinstance(collection, VariantRunCollection)
+    assert set(collection.results) == {"pcc_off", "pcc_on"}
+
+    summary_path = tmp_path / "pcc_case" / "variants.json"
+    assert collection.summary_path == summary_path
+    assert summary_path.exists()
+
+    payload = json.loads(summary_path.read_text())
+    thresholds = payload.get("thresholds", {})
+    assert pytest.approx(thresholds["crps"]["relative"]) == 0.02
+
+    variant_payload = {entry["name"]: entry for entry in payload["variants"]}
+    pcc_on = variant_payload["pcc_on"]
+    deltas = pcc_on["deltas"]
+    assert deltas["crps"]["relative"] > 0.02
+    assert deltas["coverage_error"]["relative"] > 0.02
+
+
+def test_run_variants_raises_when_improvement_below_threshold(tmp_path: Path) -> None:
+    seeds = list(range(7, 17))
+
+    def _variant_runner(config: dict[str, object]) -> dict[str, object]:
+        seed = int(config["seed"])
+        noise = (seed % 3) * 0.0002
+        use_pcc = bool(config.get("use_pcc", False))
+        base_crps = 0.5 - (0.009 if use_pcc else 0.0)
+        base_cov = 0.08 - (0.025 if use_pcc else 0.0)
+        return {
+            "metrics": {
+                "crps": base_crps + noise,
+                "coverage_error": base_cov + noise,
+            }
+        }
+
+    experiment = MultiRunExperiment(_variant_runner, num_runs=len(seeds), base_seed=min(seeds))
+
+    with pytest.raises(ValueError):
+        experiment.run_variants(
+            {"use_pcc": False},
+            run_id="pcc_fail",
+            variants={"pcc_off": {"use_pcc": False}, "pcc_on": {"use_pcc": True}},
+            baseline="pcc_off",
+            output_dir=tmp_path,
+            seeds=seeds,
+            improvement_thresholds={"crps": 0.02, "coverage_error": 0.02},
+        )
+
+
+def test_run_pcc_toggle_executes_grid(tmp_path: Path) -> None:
+    seeds = list(range(50, 60))
+
+    def _runner(config: dict[str, object]) -> dict[str, object]:
+        seed = int(config["seed"])
+        noise = (seed % 4) * 0.0003
+        use_pcc = bool(config.get("use_pcc", False))
+        base_crps = 0.6 - (0.06 if use_pcc else 0.0)
+        base_cov = 0.12 - (0.05 if use_pcc else 0.0)
+        return {
+            "metrics": {
+                "crps": base_crps + noise,
+                "coverage_error": base_cov + noise,
+            }
+        }
+
+    results = run_pcc_toggle(
+        _runner,
+        run_id="pcc_ablation",
+        pairs=["EURUSD", "GBPUSD", "USDJPY"],
+        horizons=["1h", "4h"],
+        seeds=seeds,
+        output_dir=tmp_path,
+        base_config={"other_param": 1},
+        variant_field="use_pcc",
+        improvement_thresholds={"crps": {"relative": 0.02}, "coverage_error": {"relative": 0.02}},
+    )
+
+    assert len(results) == 6
+    sample = results[("EURUSD", "1h")]
+    assert isinstance(sample, VariantRunCollection)
+    assert set(sample.results) == {"pcc_off", "pcc_on"}
+
+    manifest_path = tmp_path / "pcc_ablation" / "pcc_manifest.json"
+    assert manifest_path.exists()
+    manifest = json.loads(manifest_path.read_text())
+    assert manifest["run_id"] == "pcc_ablation"
+    assert len(manifest["entries"]) == 6

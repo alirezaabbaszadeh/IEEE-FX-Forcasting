@@ -218,6 +218,92 @@ def _extract_dataset(metadata: Mapping[str, object] | None) -> MutableMapping[st
     return {}
 
 
+def _maybe_emit_variant_summary(
+    run_root: Path, destination: Path, outputs: dict[str, Path]
+) -> None:
+    candidates = [run_root / "variants.json", run_root.parent / "variants.json"]
+    summary_path = next((candidate for candidate in candidates if candidate.exists()), None)
+    if summary_path is None:
+        return
+
+    summary = _load_json(summary_path)
+    baseline = summary.get("baseline")
+    baseline_label = str(baseline) if baseline is not None else None
+
+    # Avoid duplicating outputs when the summary lives alongside sibling variants.
+    if summary_path.parent == run_root.parent and baseline_label and run_root.name != baseline_label:
+        return
+
+    variants = summary.get("variants")
+    if not isinstance(variants, Sequence):
+        return
+
+    thresholds = summary.get("thresholds") if isinstance(summary, Mapping) else {}
+
+    rows: list[dict[str, object]] = []
+    for entry in variants:
+        if not isinstance(entry, Mapping):
+            continue
+        deltas = entry.get("deltas")
+        if not isinstance(deltas, Mapping) or not deltas:
+            continue
+        variant_name = str(entry.get("name"))
+        for metric_name, payload in deltas.items():
+            if not isinstance(payload, Mapping):
+                continue
+            absolute = payload.get("absolute")
+            relative = payload.get("relative")
+            direction = payload.get("direction")
+
+            threshold_value: float | None = None
+            if isinstance(thresholds, Mapping):
+                threshold_spec = thresholds.get(metric_name)
+                if isinstance(threshold_spec, Mapping):
+                    threshold_candidate = threshold_spec.get("relative")
+                else:
+                    threshold_candidate = threshold_spec
+                if threshold_candidate is not None:
+                    try:
+                        threshold_value = float(threshold_candidate)
+                    except (TypeError, ValueError):
+                        threshold_value = None
+
+            def _safe_float(value: object) -> float:
+                try:
+                    return float(value)
+                except (TypeError, ValueError):
+                    return float("nan")
+
+            rows.append(
+                {
+                    "baseline": baseline_label,
+                    "variant": variant_name,
+                    "metric": metric_name,
+                    "direction": str(direction) if direction is not None else "",
+                    "absolute_delta": _safe_float(absolute),
+                    "relative_delta": _safe_float(relative),
+                    "relative_threshold": _safe_float(threshold_value),
+                }
+            )
+
+    if not rows:
+        return
+
+    outputs["variants"] = _write_csv(
+        destination / "variants.csv",
+        [
+            "baseline",
+            "variant",
+            "metric",
+            "direction",
+            "absolute_delta",
+            "relative_delta",
+            "relative_threshold",
+        ],
+        rows,
+    )
+
+
 def collate_run_group(run_root: Path, *, aggregates_root: Path | None = None) -> dict[str, Path]:
     """Collate per-seed artifacts under ``run_root`` into aggregate CSV outputs."""
 
@@ -444,6 +530,8 @@ def collate_run_group(run_root: Path, *, aggregates_root: Path | None = None) ->
         ["pair", "horizon", "model", "included", "alpha", "notes"],
         mcs_rows,
     )
+
+    _maybe_emit_variant_summary(run_root, destination, outputs)
 
     artifacts_root = _infer_artifacts_root(run_root)
     if artifacts_root is not None:
