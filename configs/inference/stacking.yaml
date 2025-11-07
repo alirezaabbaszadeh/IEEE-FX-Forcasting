@@ -1,0 +1,17 @@
+# Purged stacking ensemble defaults for inference-time blending.
+base_models: ["temporal_transformer", "lstm_light", "arima", "ets"]
+ensemble_name: "stacking_purged"
+n_splits: 5
+embargo: 2
+test_size: null
+validation_splits: ["val"]
+apply_splits: ["val", "test"]
+weight_floor: 1.0e-6
+min_validation: 30
+timestamp_column: "timestamp"
+model_column: "model"
+target_column: "y_true"
+prediction_column: "y_pred"
+split_column: "split"
+pair_column: "pair"
+horizon_column: "horizon"

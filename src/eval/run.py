@@ -15,6 +15,7 @@ from omegaconf import OmegaConf
 from src.analysis.stats import analyze_dm_cache
 from src.features import VolatilityRegimeConfig, label_volatility_regimes
 from src.inference.conformal_purged import PurgedConformalCalibrator, PurgedConformalConfig
+from src.inference.stacking_purged import PurgedStackingConfig, PurgedStackingEnsembler
 from src.metrics.point import point_metrics
 
 LOGGER = logging.getLogger(__name__)
@@ -355,6 +356,7 @@ def run_evaluation(
     higher_is_better: bool = False,
     stats_metric: str = "squared_error",
     calibration_cfg: PurgedConformalConfig | None = None,
+    stacking_cfg: PurgedStackingConfig | None = None,
     claim_freeze_manifest: Path | None = None,
 ) -> Path:
     """Load predictions, aggregate metrics, and persist summaries to disk."""
@@ -362,6 +364,16 @@ def run_evaluation(
     freeze_manifest, frozen_ts = _ensure_claim_freeze(claim_freeze_manifest)
 
     predictions = pd.read_csv(predictions_path)
+    stacking_result = None
+    if stacking_cfg is not None:
+        blender = PurgedStackingEnsembler(stacking_cfg)
+        stacking_result = blender.blend(predictions)
+        if not stacking_result.predictions.empty:
+            predictions = pd.concat(
+                [predictions, stacking_result.predictions],
+                ignore_index=True,
+                sort=False,
+            )
     if frozen_ts is not None:
         _assert_test_after_freeze(predictions, frozen_ts)
     metrics = aggregate_metrics(predictions, session_timezone=session_timezone)
@@ -377,6 +389,20 @@ def run_evaluation(
         freeze_path = output_dir / "claim_freeze.json"
         freeze_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
         metrics.attrs["claim_freeze"] = payload
+
+    if stacking_result is not None:
+        weights = stacking_result.weights
+        diagnostics = stacking_result.fold_diagnostics
+        if isinstance(weights, pd.DataFrame) and not weights.empty:
+            weights_path = output_dir / "stacking_weights.csv"
+            weights.to_csv(weights_path, index=False)
+            LOGGER.info("Saved stacking weights to %s", weights_path)
+            metrics.attrs["stacking_weights_path"] = weights_path
+        if isinstance(diagnostics, pd.DataFrame) and not diagnostics.empty:
+            diagnostics_path = output_dir / "stacking_fold_metrics.csv"
+            diagnostics.to_csv(diagnostics_path, index=False)
+            LOGGER.info("Saved stacking diagnostics to %s", diagnostics_path)
+            metrics.attrs["stacking_fold_metrics_path"] = diagnostics_path
 
     if calibration_cfg is not None:
         calibrator = PurgedConformalCalibrator(calibration_cfg)
@@ -489,6 +515,11 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
         help="Path to a YAML file with purged conformal calibration settings",
     )
     parser.add_argument(
+        "--stacking-config",
+        type=Path,
+        help="Path to a YAML file describing purged stacking ensemble settings",
+    )
+    parser.add_argument(
         "--claim-freeze-manifest",
         type=Path,
         help="Path to the claim freeze manifest acknowledging when the test split became accessible",
@@ -500,12 +531,19 @@ def main(argv: Iterable[str] | None = None) -> None:
     args = parse_args(argv)
     logging.basicConfig(level=logging.INFO)
     calibration_cfg = None
+    stacking_cfg = None
     if args.calibration_config:
         raw_cfg = OmegaConf.load(args.calibration_config)
         container = OmegaConf.to_container(raw_cfg, resolve=True)
         if not isinstance(container, dict):
             raise TypeError("Calibration config must resolve to a mapping")
         calibration_cfg = PurgedConformalConfig.from_mapping(container)
+    if args.stacking_config:
+        raw_stack = OmegaConf.load(args.stacking_config)
+        stack_container = OmegaConf.to_container(raw_stack, resolve=True)
+        if not isinstance(stack_container, dict):
+            raise TypeError("Stacking config must resolve to a mapping")
+        stacking_cfg = PurgedStackingConfig.from_mapping(stack_container)
 
     output_path = run_evaluation(
         predictions_path=args.predictions,
@@ -519,6 +557,7 @@ def main(argv: Iterable[str] | None = None) -> None:
         higher_is_better=args.higher_is_better,
         stats_metric=args.stats_metric,
         calibration_cfg=calibration_cfg,
+        stacking_cfg=stacking_cfg,
         claim_freeze_manifest=args.claim_freeze_manifest,
     )
     LOGGER.info("Saved aggregated metrics to %s", output_path)
