@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Sequence
 
+from src.inference.quantile_fix import project_monotonic_quantiles
+
 try:  # pragma: no cover - optional dependency guard
     import torch
     from torch import nn
@@ -99,6 +101,9 @@ if nn is not None:  # pragma: no branch - executed when torch is available
             num_quantiles = len(self.config.quantile_levels)
             per_regime = quantile_raw.view(-1, self.config.num_regimes, num_quantiles)
             mixture = torch.einsum("brq,br->bq", per_regime, probabilities)
+            if not self.training:
+                mixture = project_monotonic_quantiles(mixture, axis=-1)
+                per_regime = project_monotonic_quantiles(per_regime, axis=-1)
             return mixture, per_regime, probabilities, logits
 
         def forward(  # type: ignore[override]

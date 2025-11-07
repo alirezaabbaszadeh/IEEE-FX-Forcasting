@@ -20,6 +20,7 @@ def test_rcqf_forward_returns_quantiles_and_median():
     model = RCQFModel(config)
     inputs = torch.randn(6, config.time_steps, config.input_features)
 
+    model.eval()
     outputs = model(inputs, return_dict=True)
     assert outputs["median"].shape == (6, 1)
     assert outputs["quantiles"].shape == (6, len(config.quantile_levels))
@@ -28,6 +29,8 @@ def test_rcqf_forward_returns_quantiles_and_median():
     )
     probs = outputs["regime_probabilities"]
     assert torch.allclose(probs.sum(dim=1), torch.ones(6), atol=1e-6)
+    diffs = outputs["quantiles"][:, 1:] - outputs["quantiles"][:, :-1]
+    assert torch.all(diffs >= -1e-6)
 
 
 def test_rcqf_forward_tensor_interface():
