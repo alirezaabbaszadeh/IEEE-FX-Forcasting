@@ -1,0 +1,223 @@
+\documentclass[twoside]{tmlr}
+
+\usepackage{amsmath}
+\usepackage{booktabs}
+\usepackage{colortbl}
+\usepackage{hyperref}
+\usepackage{pgfplots}
+\usepackage{pgfplotstable}
+\usepackage{xcolor}
+
+\pgfplotsset{compat=1.18}
+\hypersetup{
+  colorlinks=true,
+  linkcolor=black,
+  citecolor=black,
+  urlcolor=black,
+  pdfauthor={},
+  pdftitle={FX Forecasting Benchmark: Protocol and Governance Summary}
+}
+
+\title{FX Forecasting Benchmark: Protocol and Governance Summary}
+\author{Anonymous Authors\\Anonymized Institution}
+\date{}
+
+\pgfplotstableread[col sep=comma]{data/compute_governance_data.csv}{\governancedata}
+\pgfplotstableread[col sep=comma]{data/pcc_reliability_curve.csv}{\pccreliability}
+\pgfplotstableread[col sep=comma]{data/pcc_ablation_table.csv}{\pccablation}
+\pgfplotstableread[col sep=comma]{data/pcc_regime_gains.csv}{\pccregime}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+We document the protocol, fairness analysis, governance safeguards, and calibration advances for
+an anonymised foreign exchange forecasting benchmark. The accompanying supplementary package
+includes configuration files, automated evaluation scripts, and lightweight datasets enabling full
+reproduction without revealing author identities.
+\end{abstract}
+
+\section{Protocol Overview}
+The benchmark integrates daily macroeconomic indicators with intraday order book snapshots using a
+mixed-frequency data pipeline. Preprocessing enforces deterministic calendaring, leakage-free rolling
+splits, and normalisation consistent with the production deployment template. Model configurations for
+the mixture-of-experts forecaster and its calibration stack are enumerated in the supplementary
+materials, together with a reproducibility script that trains, evaluates, and packages publication
+artifacts in a single invocation. Evaluation harnesses hold-out windows with embargoes to align with
+industry governance expectations.
+
+\section{Fairness Measures}
+Fairness is assessed across the dominant currency blocs using accuracy, true positive rate (TPR), and
+false positive rate (FPR). The automated evaluation pipeline exports the summary reported in
+Table~\ref{tab:fairness}, demonstrating that the robust configuration narrows cross-region disparities
+while improving overall accuracy. Reviewers can regenerate the metrics from the anonymised artifact to
+confirm that the fairness conclusions do not rely on institution-specific tooling.
+
+\input{tables/fairness_metrics_table.tex}
+
+\section{Purged Conformal Calibration}
+Purged Conformal Calibration (PCC) augments the temporal transformer forecaster with a post-hoc
+interval calibration layer that respects market microstructure constraints. Embargoed backtests ensure
+that conformal scores are drawn from non-overlapping windows, while recency weighting emphasises the
+most recent residuals before quantile extraction. This combination restores the exchangeability
+assumptions behind conformal prediction and adapts interval width to evolving volatility regimes.
+
+\subsection{Calibration Quality}
+Figure~\ref{fig:pcc-reliability} compares nominal and empirical coverage across confidence levels. The
+uncalibrated baseline under-covers by 4--6 percentage points, whereas PCC limits deviation to roughly
+one percentage point after applying purging and weighting.
+
+\begin{figure}[t]
+  \centering
+  \begin{tikzpicture}
+    \begin{axis}[
+        width=0.85\linewidth,
+        height=6cm,
+        xmin=0.5,
+        xmax=0.9,
+        ymin=0.44,
+        ymax=0.9,
+        xlabel={Nominal coverage},
+        ylabel={Empirical coverage},
+        legend style={at={(0.02,0.98)},anchor=north west},
+        grid=both,
+        minor grid style={gray!20},
+        major grid style={gray!40}
+      ]
+      \addplot+[mark=o,thick,color=black] table[x=nominal,y=baseline]{\pccreliability};
+      \addlegendentry{Baseline}
+      \addplot+[mark=square*,thick,color=gray] table[x=nominal,y=pcc]{\pccreliability};
+      \addlegendentry{PCC}
+      \addplot[dashed,color=black!60] coordinates {(0.5,0.5) (0.9,0.9)};
+    \end{axis}
+  \end{tikzpicture}
+  \caption{Reliability curve comparing nominal confidence levels with empirical coverage before and
+after applying PCC.}
+  \label{fig:pcc-reliability}
+\end{figure}
+
+\subsection{Ablation Study}
+Table~\ref{tab:pcc-ablation} summarises the sequential ablations. Activating embargo logic alone yields
+notable reductions in both continuous ranked probability score (CRPS) and coverage error. Adding
+exponential decay weights delivers the largest gains, confirming that recency awareness is critical for
+handling rapid volatility shifts.
+
+\input{tables/pcc_ablation_table.tex}
+
+The associated improvement breakdown is illustrated in Figure~\ref{fig:pcc-ablation}, where each bar
+shows the relative change versus the uncalibrated baseline.
+
+\begin{figure}[t]
+  \centering
+  \begin{tikzpicture}
+    \begin{axis}[
+        ybar,
+        bar width=18pt,
+        width=0.8\linewidth,
+        height=6cm,
+        ymin=0,
+        ymax=12,
+        ylabel={Improvement (\%)},
+        symbolic x coords={Baseline,PCC + Embargo,PCC + Embargo + Weights},
+        xtick=data,
+        xticklabel style={rotate=15,anchor=east},
+        legend style={at={(0.5,1.05)},anchor=south,legend columns=-1},
+        legend cell align=left,
+        grid=both,
+        minor y tick num=1,
+        major grid style={gray!40}
+      ]
+      \addplot+[fill=black!65] table[x=variant,y=crps_improvement_pct]{\pccablation};
+      \addlegendentry{CRPS $\Delta$}
+      \addplot+[fill=black!25] table[x=variant,y=coverage_improvement_pct]{\pccablation};
+      \addlegendentry{Coverage $\Delta$}
+    \end{axis}
+  \end{tikzpicture}
+  \caption{Relative CRPS and coverage improvements contributed by each PCC component.}
+  \label{fig:pcc-ablation}
+\end{figure}
+
+\subsection{Regime Robustness}
+Figure~\ref{fig:pcc-regimes} reports regime-conditional CRPS gains across calm, volatile, and shock
+windows for horizons ranging from fifteen minutes to four hours. The purged calibration maintains
+benefits even during stress periods, indicating resilience to abrupt spread widening.
+
+\begin{figure}[t]
+  \centering
+  \begin{tikzpicture}
+    \begin{axis}[
+        width=0.85\linewidth,
+        height=6cm,
+        enlarge x limits=0.2,
+        enlarge y limits=0.2,
+        symbolic x coords={15m,1h,4h},
+        symbolic y coords={Calm,Volatile,Shock},
+        y dir=reverse,
+        xlabel={Forecast horizon},
+        ylabel={Market regime},
+        colorbar,
+        colormap/viridis,
+        point meta min=1.5,
+        point meta max=3.5,
+        nodes near coords={\pgfmathprintnumber[fixed,precision=2]{\pgfplotspointmeta}\,\%},
+        nodes near coords style={font=\small,color=black},
+        scatter/use mapped color={draw opacity=1,fill opacity=0.9}
+      ]
+      \addplot[scatter,only marks,mark=square*,mark size=18pt,scatter src=explicit]
+        table[x=horizon,y=regime,meta=crps_gain_pct]{\pccregime};
+    \end{axis}
+  \end{tikzpicture}
+  \caption{Regime-aware CRPS gains (percentage) delivered by PCC. Higher values indicate larger
+reductions relative to the baseline forecaster.}
+  \label{fig:pcc-regimes}
+\end{figure}
+
+\section{Compute Governance}
+Figure~\ref{fig:compute-governance} visualises the resource allocation budget for model development,
+backtesting, and post-deployment monitoring. Energy and GPU-hour traces originate from governance logs
+captured by the automated auditing workflow bundled with the anonymised artifact. Policy constraints
+enforce carbon-aware scheduling and cost ceilings, and weekly audits verify adherence to sustainability
+thresholds.
+
+\begin{figure}[t]
+  \centering
+  \begin{tikzpicture}
+    \begin{axis}[
+        ybar,
+        bar width=18pt,
+        width=0.8\linewidth,
+        height=6cm,
+        ymin=0,
+        enlarge x limits=0.2,
+        symbolic x coords={Training,Evaluation,Monitoring},
+        xtick=data,
+        ylabel={Resource allocation},
+        ymajorgrids=true,
+        grid style=dashed,
+        legend style={at={(0.5,-0.2)},anchor=north,legend columns=-1},
+        legend cell align=left,
+        axis y line*=left,
+        axis x line*=bottom
+      ]
+      \addplot+[fill=black!65] table[x=Stage,y=GPUHours]{\governancedata};
+      \addplot+[fill=black!25] table[x=Stage,y=EnergyKWh]{\governancedata};
+      \legend{GPU hours,Energy (kWh)}
+    \end{axis}
+  \end{tikzpicture}
+  \caption{Compute governance budget allocation across life-cycle stages derived from auditable logs.}
+  \label{fig:compute-governance}
+\end{figure}
+
+\section{Reproducibility and Governance}
+Reproducibility is supported through deterministic data splits, containerised execution, and pinned
+dependencies in the supplementary environment specification. The artifact bundles a submission
+checklist capturing documentation, fairness audits, and governance validations that reviewers can
+inspect without deanonymising the authors. Automated pipelines regenerate tables, figures, and a
+machine-readable manifest to facilitate independent verification.
+
+\appendix
+\section{Submission Checklist}
+The anonymised submission checklist summarises the documentation, fairness analysis, and compute
+controls required prior to release. It is distributed alongside the supplementary materials for review.
+
+\end{document}

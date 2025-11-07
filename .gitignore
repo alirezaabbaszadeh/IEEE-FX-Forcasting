@@ -8,5 +8,6 @@ outputs/
 .venv/
 artifacts/benchmark/
 paper_outputs/*.pdf
+docs/tmlr/*.pdf
 *.egg-info/
 artifact_anonymous.zip
