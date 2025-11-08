@@ -57,3 +57,14 @@ are blocked until the test passes.【F:tests/test_leak.py†L1-L74】
   provenance for every published table or figure.【F:scripts/reproduce_all.py†L1-L180】
 - When touching legacy prototypes under `v_*`, mirror the behaviour inside
   `src/` and update `docs/refactor_plan.md` if the consolidation roadmap changes.
+
+## Prototype archives
+
+- Treat `v_01` … `v_10` as read-only TensorFlow snapshots. Their orchestration
+  scripts (`Run.py`, `MainClass.py`) and helpers live beside the defaults under
+  each directory and rely on local CSV assets that are no longer bundled in the
+  cleaned root repository.【F:v_01/MainClass.py†L1-L120】【F:v_10/Run.py†L1-L120】
+- Document any change to a prototype in `docs/REPOSITORY_CLEANUP.md` so the
+  archive ledger and active `src/` implementation stay consistent. Mirror fixes
+  back into the PyTorch stack before merging so CI continues to rely solely on
+  the consolidated code path.【F:docs/REPOSITORY_CLEANUP.md†L1-L69】

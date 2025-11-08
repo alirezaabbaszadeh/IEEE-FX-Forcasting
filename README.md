@@ -95,6 +95,8 @@ trails.【F:scripts/reproduce_all.py†L1-L180】
 - `docs/pcc_claim_freeze.md` — governance record for calibrated interval claims.
 - `docs/refactor_plan.md` & `docs/research_plan.md` — roadmap and active research
   funnel.
+- `docs/REPOSITORY_CLEANUP.md` — ledger describing the archived TensorFlow
+  prototypes (`v_01` … `v_10`) and the hygiene expectations when touching them.
 
 Each card links to the modules enforcing the guarantees so reviewers can trace
 claims to concrete code.
