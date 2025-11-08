@@ -130,9 +130,9 @@ if [[ $USE_CONDA -eq 1 ]]; then
   conda activate "$ENV_NAME"
 fi
 
-log "Installing project in editable mode"
+log "Installing development dependencies"
 python -m pip install --upgrade pip
-python -m pip install -e .
+python -m pip install -r requirements-dev.txt
 
 log "Cleaning previous artifacts"
 rm -rf "$ARTIFACTS_ROOT" "$PAPER_ROOT"

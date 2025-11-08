@@ -2,8 +2,9 @@
 
 ## Environment and tooling
 
-- Create a development environment with `pip install -e .[dev]` or
-  `conda env create -f environment.yml`; both pin the dependencies used by CI.
+- Create a development environment with `python -m pip install -r
+  requirements-dev.txt` or `conda env create -f environment.yml`; both pin the
+  dependencies used by CI.
 - Run `make ci` before pushing to ensure linting, static typing, unit tests, and
   the deterministic smoke training pipeline stay green.【F:Makefile†L1-L64】
 - Use `pre-commit run --all-files` when touching formatting-sensitive files; the

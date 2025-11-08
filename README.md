@@ -10,14 +10,15 @@ contributors and reviewers; focused documentation lives in the cards under
 ## Quick start
 
 ```bash
-pip install -e .[dev]
+python -m pip install -r requirements-dev.txt
 make ci
 ```
 
-The editable install exposes the `src.cli` entry point, and `make ci` mirrors the
+The requirements file installs the development dependencies, and `make ci` mirrors the
 repository smoke CI by running linting, type checks, unit tests, and the
 deterministic training regression against the synthetic fixture dataset in
-`data/sample.csv`.【F:pyproject.toml†L1-L49】【F:Makefile†L1-L64】
+`data/sample.csv`. Use `python -m src.cli ...` to access the Hydra-powered command
+line interface when triggering bespoke jobs.【F:pyproject.toml†L1-L49】【F:Makefile†L1-L64】
 
 For an end-to-end rebuild of tables, figures, and manifests, run:
 
@@ -66,8 +67,8 @@ containerised environments) and clears existing `artifacts/` and
 
 ## Developer workflow
 
-1. `pip install -e .[dev]` or `conda env create -f environment.yml` to reproduce
-   the locked environment.
+1. `python -m pip install -r requirements-dev.txt` or `conda env create -f
+   environment.yml` to reproduce the locked environment.
 2. Use `python -m src.cli train` for ad-hoc runs or invoke `make train-smoke` for
    the deterministic regression suite.
 3. Run `pytest` for targeted tests; `pytest tests/test_leak.py` isolates the
