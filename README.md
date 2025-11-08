@@ -1,176 +1,157 @@
-**Executable Code Workplan — Explanatory Version (with tightened standards)**
+# IEEE FX Forecasting
 
-No code snippets, no screenshots. This is the operational spec you implement so the paper reads like original research, not a class project.
+The IEEE FX Forecasting project packages the benchmark, research code, and
+publication assets that accompany our probabilistic mix-of-experts FX model. The
+repository consolidates the production-ready implementation under `src/` while
+retaining historical `v_*` prototypes for provenance. This document orients
+contributors and reviewers; focused documentation lives in the cards under
+`docs/`.
 
-## 1) Multi-run module with controlled seeds
+## Quick start
 
-* **Goal:** Stable performance estimates that aren’t artifacts of lucky initialization or a “good GPU day.”
-* **What to include:** Full control of all RNG sources (framework, NumPy, Python, CUDA/cuDNN, dataloader workers), deterministic kernels where available, and explicit logging of `seed`, `git commit`, device specs, driver versions, and mixed-precision settings. Aggregate metrics with mean, standard deviation, and 95% CIs.
-* **Execution standard:** ≥5 independent runs for Model V8 and key baselines; compute CIs via Student-t and optionally nonparametric bootstrap (1k resamples). Report effect sizes (e.g., Cohen’s d) against the best baseline. Each run writes a standalone artifact with `run_id` and complete metadata.
-
-## 2) Multi-pair / multi-horizon infrastructure with walk-forward evaluation
-
-* **Goal:** Demonstrate generalization beyond a single pair and horizon with deployment-realistic timing.
-* **What to include:** A data loader that accepts lists of currency pairs and horizons, timezone normalization, trading-calendar awareness, robust resampling/aggregation, and strict no-look-ahead. Normalization stats computed on train only and applied to val/test. Missing data and DST handled explicitly.
-* **Execution standard:** Rolling or expanding walk-forward splits with an **embargo** between train and test to prevent overlap leakage; hyperparameters tuned only on train/val for the current slice. Report pair×horizon results, macro/micro averages, and stratified summaries by volatility regime and session (e.g., London/NY).
-
-## 3) Hyperparameter sensitivity (compact grid/Bayesian optimization)
-
-* **Goal:** Show the model isn’t propped up by a single “magic” setting.
-* **What to include:** A declared search budget; principled spaces for the dominant knobs; Sobol or lightweight Bayesian optimization; early-stopping and multi-fidelity options (e.g., ASHA/Hyperband). Plot response curves/partial dependence for key parameters.
-* **Execution standard:** Optimization objective is the **mean** metric across multi-run repeats, not a single run. Publish the top-k configs with seeds, and provide stability analyses and rank consistency across splits and pairs.
-
-## 4) Statistical testing
-
-* **Goal:** Separate real differences from noise.
-* **What to include:** One-way ANOVA across model variants with Tukey HSD (or comparable) for post-hoc pairwise tests; for forecast errors over time, Diebold-Mariano with Newey-West covariance.
-* **Execution standard:** Check assumptions (normality, homoscedasticity). If violated: Welch’s ANOVA or Kruskal-Wallis, with Dunn’s test + Holm correction. Always report p-values, 95% CIs, and effect sizes (η²/ω² or rank-based). Prefer advanced multiple-comparison controls such as MCS or SPA for model sets. Include a brief power analysis or observed power.
-
-## 5) Interpretability (Attention and MoE)
-
-* **Goal:** Explain what the model attends to and when different experts activate.
-* **What to include:** Attention heatmaps for specific market events, expert-utilization time series, gating entropy, and correlations with volatility or spread. Include representative success and failure cases.
-* **Execution standard:** Use fixed seeds for interpretability extraction, sanity checks under small input perturbations, and printable summaries. Where feasible, complement attention with gradient-based attributions (e.g., IG) to avoid over-interpreting softmax weights.
-
-## 6) Compute benchmarking
-
-* **Goal:** Make the cost of use explicit.
-* **What to include:** Per-epoch training time, per-sample and per-batch inference latency, throughput, peak memory, and parameter count.
-* **Execution standard:** Short warm-up, then three or more measurements; report mean and stdev, plus p50/p90/p99 latencies for inference. Specify exact hardware, drivers, and precision. Compare all variants under the same batch size and mixed-precision policy.
-
-## 7) Clean, publishable outputs
-
-* **Goal:** Traceable, reusable results without digging through logs.
-* **What to include:** Structured CSV/Parquet with stable naming; vector graphics (PDF/SVG) or 300 dpi PNG; consistent fonts, symbols, and units; visible confidence bands.
-* **Execution standard:** Conventions such as
-  `runs/<model>/<pair>_<horizon>/seed-<id>/metrics.csv`
-  Figures have titles, legends, axis labels with units, and CI shading. Include a machine-readable `metadata.json` alongside each table/figure.
-
-## 8) Single-source configuration
-
-* **Goal:** Change scenarios without editing code.
-* **What to include:** One YAML (or equivalent) for data paths, pairs, horizons, features, architecture, training, logging, and evaluation toggles.
-* **Execution standard:** Schema validation, CLI overrides with precedence, config fingerprint hashed into outputs, environment lockfile recorded, and dataset checksums verified at load. Store the resolved config next to each run.
-
-## 9) Tests and lightweight CI
-
-* **Goal:** Prevent silent breakage during refactors.
-* **What to include:** Unit tests for data loaders and metrics, leakage tests, reproducibility checks, and a smoke-test training loop on a tiny dataset.
-* **Execution standard:** CI runs on a minimal fixture dataset; lint/format/type checks; coverage reported; artifacts from the smoke run uploaded. CI fails if reproducibility error exceeds a preset tolerance.
-
----
-
-# “Gold Standard” Requirements for Original Research
-
-## A. Reproducibility and provenance
-
-* Environment captured via container or conda with pinned versions; deterministic flags documented; `git commit` embedded in logs and outputs; a one-command script to regenerate all tables and figures end-to-end.
-* All random seeds specified; hardware and driver versions logged; exact data snapshot (with checksum) archived or programmatically re-created.
-
-## B. Time-series-correct evaluation
-
-* No look-ahead, proper walk-forward with embargo, and hyperparameter tuning restricted to in-slice train/val only.
-* Baselines both classical and modern, evaluated under identical data splits, normalization protocols, and compute budgets.
-* Distribution shift checks: performance stratified by volatility, sessions, crises, and structural break periods; optional change-point tests.
-
-## C. Uncertainty and calibration
-
-* Report predictive intervals (e.g., conformal or quantile models), empirical coverage vs nominal, and calibration plots. Include log-loss or CRPS where applicable.
-
-## D. Economic realism (if claiming practical forecasting value)
-
-* Backtests that include transaction costs, slippage, and execution latency; position sizing and turnover; risk metrics (drawdown, Sharpe, Sortino) with CIs. Separate research claims from trading claims if you are not providing a full execution model.
-
-## E. Compute governance
-
-* Declare a compute budget; align budgets across models; report “improvement per unit cost” (e.g., RMSE reduction per GPU-hour). Include energy estimate if feasible.
-
-## F. Transparent data handling
-
-* Data sources, licenses, and any filtering or revisions documented. Preprocessing steps, missing-value policy, outlier handling, and resampling rules specified. Ensure train-only normalization and feature engineering.
-
-## G. Documentation and artifacts
-
-* Release code, configs, and a minimal working dataset or data-rebuild scripts under a permissive license consistent with data terms. Provide a Model Card covering intended use, limitations, risks, and failure modes.
-* Archive artifacts with a persistent identifier; include `CITATION.cff`, README with exact reproduction commands, and a changelog.
-
-## H. Statistical integrity
-
-* Multiple-comparison control across models and horizons; effect sizes alongside p-values; interval estimates emphasized over point estimates. Where feasible, include SPA/MCS and robustness to alternative metrics.
-
-## I. Security, compliance, and ethics
-
-* No PII; secure secrets and API keys; document any external services. Clarify non-advisory nature of outputs and known risks of deployment in high-stakes settings.
-
----
-
-Implementing this framework removes the “maybe you got lucky” objection. Even if luck helped, the reporting standards here make luck irrelevant.
-
-## Continuous integration quickstart
-
-The automated CI workflow executes the following reproducibility checks:
-
-```
-make lint
-make typecheck
-make test
-make train-smoke
+```bash
+pip install -e .[dev]
+make ci
 ```
 
-Run `make ci` locally to mirror the pipeline before opening a pull request.
+The editable install exposes the `src.cli` entry point, and `make ci` mirrors the
+repository smoke CI by running linting, type checks, unit tests, and the
+deterministic training regression against the synthetic fixture dataset in
+`data/sample.csv`.【F:pyproject.toml†L1-L49】【F:Makefile†L1-L64】
 
-## End-to-end reproduction script
+For an end-to-end rebuild of tables, figures, and manifests, run:
 
-Run `./scripts/reproduce_all.sh` from the repository root to provision the Conda
-environment, execute the multi-run training workflow, launch the calibration and
-statistical analysis CLIs, and rebuild `paper_outputs/` from scratch. The script
-clears any existing `artifacts/` and `paper_outputs/` directories so run it on a
-clean machine (or throwaway workspace) when validating a release. Pass
-`--no-conda` when Conda is unavailable (e.g. in CI) and `--smoke` to execute the
-shortened regression workload. Additional Hydra overrides can be forwarded after
-`--` just as you would with `python -m src.cli`.
+```bash
+./scripts/reproduce_all.sh --smoke
+```
 
-## Artifact directory layout
+Drop the `--smoke` flag to execute the full multi-seed workflow when preparing a
+release. The script optionally provisions Conda (pass `--no-conda` in
+containerised environments) and clears existing `artifacts/` and
+`paper_outputs/` directories to guarantee reproducibility.【F:scripts/reproduce_all.sh†L1-L66】
 
-Running `make train-smoke` now executes the multi-run training pipeline and populates
-structured outputs. Each seed writes into
-`artifacts/runs/<model>/<config_hash>/<pair>_<horizon>/<window>/seed-<id>/` with:
+## Key capabilities
 
-- `metrics.json` summarising the final epoch metrics.
-- `metadata.json` referencing the per-run manifest, resolved config, and compute log.
-- `resolved_config.yaml`, `manifest.json`, and `compute.json` describing the exact
-  configuration and hardware snapshot used for the run.
+- **Deterministic multirun training.** `src.training.runner` coordinates multi-
+  seed experiments, sets deterministic flags, and writes manifests with seed,
+  git commit, hardware, and resolved configuration hashes for audit-ready
+  reporting.【F:src/training/runner.py†L1-L200】
+- **Time-series correct data pipeline.**
+  `src.data.walkforward.WalkForwardSplitter` enforces timezone normalisation,
+  embargoed walk-forward splits, and leakage guards inherited from the
+  historical prototypes without duplicating utilities.【F:src/data/walkforward.py†L1-L218】
+- **Uncertainty-aware inference.** The purged conformal calibration stack ships
+  with governance defaults in `configs/inference/pcc.yaml` and evaluation
+  routines in `src.inference.conformal_purged`, keeping coverage claims
+  reproducible and embargo compliant.【F:configs/inference/pcc.yaml†L1-L8】【F:src/inference/conformal_purged.py†L1-L200】
+- **Statistical reporting.** `scripts/export_tables.py` and
+  `scripts/export_figures.py` rebuild publication assets directly from structured
+  metrics, while `src.analysis.stats` implements Diebold-Mariano, ANOVA/Welch,
+  and SPA/MCS guards referenced by the claim freeze documentation.【F:scripts/export_tables.py†L1-L160】【F:src/analysis/stats.py†L1-L220】
 
-Aggregated reports are collated under
-`artifacts/aggregates/<model>/<config_hash>/<pair>_<horizon>/<window>/` with
-`aggregate.csv`, `calibration.csv`, `dm_table.csv`, `spa_table.csv`, and
-`mcs_table.csv` placeholders ready for publication tables. Use
-`python scripts/reproduce_all.py --populate-only` to regenerate these placeholders
-without rebuilding tables and figures, or call the script without the flag to export
-full publication assets alongside the aggregate summaries.
+## Repository layout
 
-## Release archival workflow
+- `src/` — unified research codebase spanning data, training, inference,
+  analysis, and reporting.
+- `configs/` — Hydra schemas and governance manifests, including the PCC freeze
+  record consumed by the publication pipeline.
+- `scripts/` — automation entry points for training, calibration, benchmarking,
+  table/figure exports, and archival packaging.
+- `docs/` — benchmark, data, model, developer, and research cards (see
+  Documentation map).
+- `paper_outputs/` — regenerated figures, tables, and ablation summaries keyed to
+  reproduction manifests.
+- `v_*` — archived prototype implementations retained for provenance; use the
+  consolidated modules in `src/` for new work.【F:src/__init__.py†L1-L30】
 
-Follow this checklist when preparing an archival release (e.g., Zenodo) for the
-benchmark:
+## Developer workflow
 
-1. **Regenerate publication assets.** Run
+1. `pip install -e .[dev]` or `conda env create -f environment.yml` to reproduce
+   the locked environment.
+2. Use `python -m src.cli train` for ad-hoc runs or invoke `make train-smoke` for
+   the deterministic regression suite.
+3. Run `pytest` for targeted tests; `pytest tests/test_leak.py` isolates the
+   timestamp continuity guard when modifying walk-forward logic.【F:pytest.ini†L1-L9】【F:tests/test_leak.py†L1-L74】
+4. Capture new publication assets with `python scripts/export_tables.py` and
+   `python scripts/export_figures.py` after populating `artifacts/` via the
+   training workflow.
+
+Structured outputs follow the
+`artifacts/runs/<model>/<config_hash>/<pair>_<horizon>/<window>/seed-<id>/`
+layout, with aggregates under `artifacts/aggregates/`. Metadata files include
+resolved configs, environment snapshots, and compute manifests for audit
+trails.【F:scripts/reproduce_all.py†L1-L180】
+
+## Documentation map
+
+- `docs/BENCHMARK_CARD.md` — evaluation protocol, fairness commitments, and
+  guardrails.
+- `docs/DATA_CARD.md` — dataset provenance, preprocessing controls, and leakage
+  defences.
+- `docs/model_card.md` — architecture summary, intended use, risks, and
+  reproducibility recipe.
+- `docs/developer.md` — leak guard remediation, governance reminders, and
+  day-to-day contributor workflow.
+- `docs/pcc_claim_freeze.md` — governance record for calibrated interval claims.
+- `docs/refactor_plan.md` & `docs/research_plan.md` — roadmap and active research
+  funnel.
+
+Each card links to the modules enforcing the guarantees so reviewers can trace
+claims to concrete code.
+
+## Research execution standards
+
+The benchmark continues to enforce the nine execution pillars required for
+publishable FX forecasting research. Automation across the repository satisfies
+these expectations:
+
+1. **Deterministic multirun module** capturing seeds, device state, and metadata
+   across ≥5 runs for major baselines.【F:src/training/runner.py†L40-L132】
+2. **Multi-pair, multi-horizon walk-forward evaluation** with embargo gaps and
+   session-aware diagnostics.【F:src/data/walkforward.py†L24-L218】
+3. **Hyperparameter sensitivity** via Sobol/Bayesian search harnesses that score
+   the mean metric across runs and persist top-k configs.【F:src/analysis/hparam.py†L1-L210】
+4. **Statistical testing** covering ANOVA/Welch, Tukey/Dunn, and Diebold-Mariano
+   with Newey-West adjustments.【F:src/analysis/stats.py†L1-L220】
+5. **Interpretability reporting** including attention heatmaps, expert
+   utilisation timelines, and gradient-based sanity checks via
+   `src.analysis.interpretability`.【F:src/analysis/interpretability.py†L1-L210】
+6. **Compute benchmarking** implemented in `scripts/benchmark.py`, recording
+   throughput, latency, and memory alongside configuration manifests.【F:scripts/benchmark.py†L1-L180】
+7. **Publishable artifacts** produced by the export scripts and governed by the
+   manifest indices stored in `artifacts/` and `paper_outputs/`.
+8. **Single-source configuration** enforced by Hydra schemas that fingerprint
+   each resolved run.【F:configs/schema/model.yaml†L1-L120】
+9. **Tests and lightweight CI** delivered via the Makefile targets noted in the
+   quick start section.【F:Makefile†L1-L64】
+
+The companion “Gold Standard” requirements expand on reproducibility,
+uncertainty, economic realism, compute governance, transparent data handling,
+documentation, statistical integrity, and ethics. Detailed expectations live in
+the benchmark, data, and model cards plus the governance profiles under
+`configs/governance/`.
+
+## Release checklist
+
+1. Regenerate publication assets with
    `python scripts/reproduce_all.py --manifest artifacts/paper_manifest.json` to
-   refresh tables/figures and capture a manifest that records every metrics
-   source, resolved config, and aggregate file.
-2. **Freeze configurations.** Copy the referenced resolved configs from
-   `artifacts/configs/` and the CLI entry scripts under `scripts/` into a
-   dedicated `release_bundle/` directory alongside `paper_outputs/`.
-3. **Verify provenance.** Double-check that each subdirectory under
-   `artifacts/runs/` contains the expected `metadata.json`, `metrics.json`, and
-   `resolved_config.yaml` payloads; these tie the deposit back to the originating
-   training runs.
-4. **Create an archive.** Zip the `release_bundle/` directory and upload it to
-   your archival service. Include the generated manifest JSON so that reviewers
-   can retrace which files produced the published tables.
-5. **Mint or update the DOI.** Once the upload is complete, record the minted
-   DOI in `CITATION.cff` and in the archival service metadata. If the DOI is still
-   pending, leave the placeholder value and update it post-publication.
+   record metrics sources, resolved configs, and aggregate outputs.
+2. **Freeze configurations.** Copy referenced configs from `artifacts/configs/`
+   and the CLI entry scripts under `scripts/` into a `release_bundle/` directory
+   alongside `paper_outputs/`.
+3. **Verify datasets.** Confirm dataset checksums and manifest timestamps align
+   with the release candidate; rerun `make train-smoke` after pulling fresh
+   fixtures to catch stale caches.
+4. **Audit compute manifests.** Inspect `artifacts/*/compute.json` for driver
+   versions, precision modes, and hardware drift since the previous release.
+5. **Mint or update the DOI.** Record the minted DOI in `CITATION.cff` and the
+   archival metadata once the upload succeeds.
+6. **Cross-check documentation.** Ensure the README, benchmark card, and model
+   card reflect the release tag, DOI, and claim freeze metadata.
+7. **Create the archival record.** Package the regenerated `paper_outputs/`, the
+   curated configs from `artifacts/configs/`, and the release manifest for
+   upload to the archival service. Include the generated manifest JSON so
+   reviewers can retrace the files underlying published tables.
 
-See `docs/BENCHMARK_CARD.md` for a narrative summary of these steps and links to
+See `docs/BENCHMARK_CARD.md` for a narrative summary of the release workflow and
 responsible-use guidance.
