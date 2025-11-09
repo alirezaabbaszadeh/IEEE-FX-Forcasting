@@ -7,9 +7,11 @@
   dependencies used by CI.
 - Run `make ci` before pushing to ensure linting, static typing, unit tests, and
   the deterministic smoke training pipeline stay green.【F:Makefile†L1-L64】
+- Install pre-commit locally with `python -m pip install pre-commit` and run
+  `pre-commit install` once to register the git hooks.
 - Use `pre-commit run --all-files` when touching formatting-sensitive files; the
-  hooks mirror CI defaults for isort, black, and ruff settings defined in
-  `pyproject.toml`.【F:pyproject.toml†L1-L49】
+  hooks mirror CI defaults for isort, Black, and Ruff settings defined in
+  `pyproject.toml`.【F:pyproject.toml†L1-L57】
 
 ## Workflow expectations
 
