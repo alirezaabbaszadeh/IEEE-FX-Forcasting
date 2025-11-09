@@ -9,3 +9,7 @@ ignore = ["E203"]
 
 [tool.ruff.per-file-ignores]
 "src/__init__.py" = ["F401"]
+
+[tool.isort]
+profile = "black"
+line_length = 100
