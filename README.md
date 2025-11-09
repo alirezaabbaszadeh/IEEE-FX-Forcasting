@@ -69,8 +69,9 @@ containerised environments) and clears existing `artifacts/` and
 
 1. `python -m pip install -r requirements-dev.txt` or `conda env create -f
    environment.yml` to reproduce the locked environment.
-2. Use `python -m src.cli train` for ad-hoc runs or invoke `make train-smoke` for
-   the deterministic regression suite.
+2. Use `python -m src.cli` for ad-hoc single runs or `python -m src.cli --multirun`
+   for multi-seed experiments; invoke `make train-smoke` for the deterministic
+   regression suite.
 3. Run `pytest` for targeted tests; `pytest tests/test_leak.py` isolates the
    timestamp continuity guard when modifying walk-forward logic.【F:pytest.ini†L1-L9】【F:tests/test_leak.py†L1-L74】
 4. Capture new publication assets with `python scripts/export_tables.py` and
