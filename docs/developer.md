@@ -13,9 +13,13 @@
 
 ## Workflow expectations
 
-1. Launch experiments via `python -m src.cli train` or the pre-baked Make targets
-   in the repository root. CLI invocations resolve Hydra configs from `configs/`
-   and emit manifests under `artifacts/` for every seed.【F:src/cli.py†L1-L200】
+1. Launch experiments via `python -m src.cli` for single runs or `python -m src.cli --multirun`
+   for multi-seed sweeps, or use the pre-baked Make targets in the repository
+   root. CLI invocations resolve Hydra configs from `configs/` and emit manifests
+   under `artifacts/` for every seed. Trigger interpretability jobs with the
+   dedicated subcommand (for example,
+   `python -m src.cli interpret --model-module <path> --events <tensor_file>`),
+   which writes artefacts to `artifacts/interpretability`.【F:src/cli.py†L1-L200】
 2. Check new metrics with the reporting helpers in `src.reporting` and regenerate
    publication tables/figures using `python scripts/export_tables.py` and
    `python scripts/export_figures.py` after the training jobs finish.【F:scripts/export_tables.py†L1-L160】【F:scripts/export_figures.py†L1-L160】
